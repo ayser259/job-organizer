@@ -11,6 +11,12 @@ const toggleSecretBtn = document.getElementById('toggleSecret');
 const testBtn = document.getElementById('testBtn');
 const saveBtn = document.getElementById('saveBtn');
 
+// OpenAI Elements
+const openaiApiKeyInput = document.getElementById('openaiApiKey');
+const toggleOpenAIBtn = document.getElementById('toggleOpenAI');
+const openaiDot = document.getElementById('openaiDot');
+const openaiStatusText = document.getElementById('openaiStatusText');
+
 // Status elements
 const statusCard = document.getElementById('statusCard');
 const statusIndicator = document.getElementById('statusIndicator');
@@ -34,12 +40,16 @@ async function init() {
  */
 async function loadSavedSettings() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['notionSecret', 'databaseId'], (result) => {
+    chrome.storage.local.get(['notionSecret', 'databaseId', 'openaiApiKey'], (result) => {
       if (result.notionSecret) {
         notionSecretInput.value = result.notionSecret;
       }
       if (result.databaseId) {
         databaseIdInput.value = result.databaseId;
+      }
+      if (result.openaiApiKey) {
+        openaiApiKeyInput.value = result.openaiApiKey;
+        updateOpenAIStatus('configured');
       }
       
       // If we have saved credentials, test the connection
@@ -67,6 +77,29 @@ function setupEventListeners() {
     eyeClosed.classList.toggle('hidden');
   });
 
+  // Toggle OpenAI key visibility
+  toggleOpenAIBtn.addEventListener('click', () => {
+    const isPassword = openaiApiKeyInput.type === 'password';
+    openaiApiKeyInput.type = isPassword ? 'text' : 'password';
+    
+    const eyeOpen = toggleOpenAIBtn.querySelector('.eye-open');
+    const eyeClosed = toggleOpenAIBtn.querySelector('.eye-closed');
+    eyeOpen.classList.toggle('hidden');
+    eyeClosed.classList.toggle('hidden');
+  });
+
+  // Update OpenAI status on input
+  openaiApiKeyInput.addEventListener('input', () => {
+    const value = openaiApiKeyInput.value.trim();
+    if (value && value.startsWith('sk-')) {
+      updateOpenAIStatus('ready');
+    } else if (value) {
+      updateOpenAIStatus('invalid');
+    } else {
+      updateOpenAIStatus('empty');
+    }
+  });
+
   // Test connection
   testBtn.addEventListener('click', () => testConnection(false));
 
@@ -88,6 +121,33 @@ function setupEventListeners() {
     
     e.target.value = value;
   });
+}
+
+/**
+ * Update OpenAI status indicator
+ * @param {string} state - 'configured', 'ready', 'invalid', 'empty'
+ */
+function updateOpenAIStatus(state) {
+  openaiDot.classList.remove('connected', 'error', 'loading');
+  
+  switch (state) {
+    case 'configured':
+      openaiDot.classList.add('connected');
+      openaiStatusText.textContent = 'API key configured';
+      break;
+    case 'ready':
+      openaiDot.classList.add('loading');
+      openaiStatusText.textContent = 'Ready to save';
+      break;
+    case 'invalid':
+      openaiDot.classList.add('error');
+      openaiStatusText.textContent = 'Key should start with "sk-"';
+      break;
+    case 'empty':
+    default:
+      openaiStatusText.textContent = 'Not configured';
+      break;
+  }
 }
 
 /**
@@ -196,15 +256,22 @@ async function handleSave(e) {
 
   const secret = notionSecretInput.value.trim();
   const databaseId = databaseIdInput.value.trim();
+  const openaiKey = openaiApiKeyInput.value.trim();
 
   if (!secret || !databaseId) {
     showToast('Please fill in all required fields', 'error');
     return;
   }
 
-  // Validate format
+  // Validate Notion secret format
   if (!secret.startsWith('secret_') && !secret.startsWith('ntn_')) {
     showToast('Integration secret should start with "secret_" or "ntn_"', 'error');
+    return;
+  }
+
+  // Validate OpenAI key format if provided
+  if (openaiKey && !openaiKey.startsWith('sk-')) {
+    showToast('OpenAI API key should start with "sk-"', 'error');
     return;
   }
 
@@ -212,24 +279,41 @@ async function handleSave(e) {
   saveBtn.disabled = true;
 
   try {
+    // Build storage object
+    const storageData = {
+      notionSecret: secret,
+      databaseId: databaseId
+    };
+    
+    // Include OpenAI key if provided
+    if (openaiKey) {
+      storageData.openaiApiKey = openaiKey;
+    } else {
+      // Remove existing key if cleared
+      await new Promise((resolve) => {
+        chrome.storage.local.remove('openaiApiKey', resolve);
+      });
+    }
+
     // Save to chrome storage
     await new Promise((resolve, reject) => {
-      chrome.storage.local.set(
-        {
-          notionSecret: secret,
-          databaseId: databaseId
-        },
-        () => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-          resolve();
+      chrome.storage.local.set(storageData, () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
         }
-      );
+        resolve();
+      });
     });
 
     showToast('Settings saved successfully!', 'success');
+    
+    // Update OpenAI status
+    if (openaiKey) {
+      updateOpenAIStatus('configured');
+    } else {
+      updateOpenAIStatus('empty');
+    }
     
     // Test the connection after saving
     await testConnection(true);

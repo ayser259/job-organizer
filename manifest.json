@@ -6,10 +6,12 @@
   "permissions": [
     "activeTab",
     "storage",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
-    "https://api.notion.com/*"
+    "https://api.notion.com/*",
+    "https://api.openai.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",

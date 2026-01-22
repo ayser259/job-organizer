@@ -6,6 +6,7 @@ A schema-aware Chrome Extension that dynamically bridges your browser with any N
 
 - **Dynamic Schema Detection**: Automatically fetches and renders form fields based on your Notion database properties
 - **Auto-Population**: Pre-fills URL and Title fields with the current page data
+- **AI-Powered Auto-Fill**: Uses OpenAI to read page content and intelligently fill all form fields
 - **Multi-Type Support**: Handles title, rich_text, url, select, multi_select, checkbox, number, date, email, phone, and status properties
 - **Notion-Inspired UI**: Dark theme interface that matches the Notion aesthetic
 - **Secure Storage**: Credentials stored locally in Chrome's secure storage
@@ -84,6 +85,13 @@ The Database ID is the 32-character string before `?v=`
 5. Click **Test Connection** to verify
 6. Click **Save Settings**
 
+### Step 5: Enable AI Auto-Fill (Optional)
+
+1. Get an OpenAI API key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+2. In the extension settings, paste your API key in the "AI Auto-Fill" section
+3. Click **Save Settings**
+4. The "Add Details" button will now appear in the popup
+
 ## Usage
 
 1. Navigate to any webpage you want to save
@@ -91,9 +99,24 @@ The Database ID is the 32-character string before `?v=`
 3. The form will automatically populate with:
    - Page title → Title field
    - Page URL → URL field
-4. Fill in any additional fields
-5. Click **Save to Notion**
-6. Click **View in Notion** to open the new page
+4. **Optional**: Click the **Add Details** button to automatically extract and fill all fields from the page
+5. Review and adjust any fields as needed
+6. Click **Save to Notion**
+7. Click **View in Notion** to open the new page
+
+### Add Details Feature
+
+When you click "Add Details", the extension:
+1. Reads the content of the current page (article, main content, or full body)
+2. Sends the content to OpenAI along with your database schema
+3. AI extracts relevant information for each field type
+4. Fields are automatically populated with a visual indicator (✨)
+
+The AI will:
+- Only select options that exist in your dropdowns (select/multi-select)
+- Format dates correctly
+- Extract numbers, emails, phone numbers appropriately
+- Skip fields it can't confidently fill
 
 ## Architecture
 
@@ -163,20 +186,23 @@ The extension constructs payloads following the Notion API specification:
 ## Security Considerations
 
 - **Local Storage**: Credentials are stored in `chrome.storage.local`, which is sandboxed per-extension
-- **No External Servers**: All API calls go directly to Notion's API
-- **Secret Visibility**: The Integration Secret is masked by default in the options page
-- **HTTPS Only**: All Notion API communication uses HTTPS
+- **No External Servers**: All API calls go directly to Notion's and OpenAI's APIs
+- **Secret Visibility**: API keys are masked by default in the options page
+- **HTTPS Only**: All API communication uses HTTPS
+- **Content Reading**: Page content is only read when you click "Add Details" and is sent directly to OpenAI
 
 ### Future Security Enhancements
 
 For production deployment, consider:
-- Implementing a backend proxy to hide the Integration Secret completely
+- Implementing a backend proxy to hide API keys completely
 - Using OAuth 2.0 for public integrations
 - Adding rate limiting and request validation
 
 ## Error Handling
 
 The extension handles common error scenarios:
+
+### Notion Errors
 
 | Error | Message | Solution |
 |-------|---------|----------|
@@ -185,6 +211,15 @@ The extension handles common error scenarios:
 | 404 | Database not found | Verify the Database ID |
 | 429 | Rate limited | Wait a moment and retry |
 | Network | Network error | Check internet connection |
+
+### OpenAI Errors
+
+| Error | Message | Solution |
+|-------|---------|----------|
+| 401 | Invalid API key | Check your OpenAI key in settings |
+| 429 | Rate limited | Wait a moment and retry |
+| 402 | Billing issue | Check your OpenAI account billing |
+| Cannot access | Page restricted | Extension can't read Chrome pages or restricted sites |
 
 ## Development
 
