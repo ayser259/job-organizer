@@ -102,7 +102,7 @@ async function handleNotionRequest(payload) {
 }
 
 /**
- * Get active tab URL and title
+ * Get active tab URL, title, and location
  * @returns {Promise<Object>} Tab information
  */
 async function getActiveTabInfo() {
@@ -112,10 +112,216 @@ async function getActiveTabInfo() {
     throw new Error('No active tab found');
   }
 
+  let location = '';
+  
+  // Try to extract location from the page
+  try {
+    const url = tab.url || '';
+    // Skip chrome:// and other restricted pages
+    if (!url.startsWith('chrome://') && 
+        !url.startsWith('chrome-extension://') && 
+        !url.startsWith('about:') &&
+        !url.startsWith('edge://') &&
+        url !== '') {
+      
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: extractLocationOnly
+      });
+      
+      if (results && results[0] && results[0].result) {
+        location = results[0].result;
+        console.log('📍 Location extracted from page:', location);
+      } else {
+        console.log('⚠️ No location extracted from page');
+      }
+    }
+  } catch (e) {
+    console.log('❌ Could not extract location:', e.message);
+    // Silently fail - location is optional
+  }
+
+  // Parse LinkedIn-style titles: "Role Name | Company | LinkedIn"
+  let roleName = tab.title || '';
+  let companyName = '';
+  
+  if (tab.title && tab.title.includes(' | ')) {
+    const parts = tab.title.split(' | ');
+    if (parts.length >= 2) {
+      roleName = parts[0].trim();
+      companyName = parts[1].trim();
+      console.log(`📋 Parsed title: "${tab.title}"`);
+      console.log(`   → Role: "${roleName}"`);
+      console.log(`   → Company: "${companyName}"`);
+      // If there's a third part that's just "LinkedIn" or similar, ignore it
+      if (parts.length === 3 && parts[2].toLowerCase().match(/^(linkedin|indeed|glassdoor)$/)) {
+        // Keep role and company as extracted
+      } else if (parts.length > 2) {
+        // If there are more parts, it might be structured differently
+        // Keep the first part as role, second as company
+      }
+    }
+  }
+  
   return {
     url: tab.url || '',
-    title: tab.title || ''
+    title: tab.title || '',
+    roleName: roleName,
+    companyName: companyName,
+    location: location || ''
   };
+}
+
+/**
+ * Extract only location from page - lightweight version for tab info
+ */
+function extractLocationOnly() {
+  try {
+    let location = '';
+    let possibleLocations = [];
+    
+    // 1. Try structured data
+    const ldJson = document.querySelector('script[type="application/ld+json"]');
+    if (ldJson && ldJson.textContent) {
+      try {
+        const data = JSON.parse(ldJson.textContent);
+        if (data['@type'] === 'JobPosting' && data.jobLocation) {
+          const jobLoc = data.jobLocation;
+          if (typeof jobLoc === 'string') {
+            possibleLocations.push(jobLoc);
+          } else if (jobLoc.address) {
+            if (typeof jobLoc.address === 'string') {
+              possibleLocations.push(jobLoc.address);
+            } else if (jobLoc.address.addressLocality || jobLoc.address.addressRegion) {
+              possibleLocations.push([jobLoc.address.addressLocality, jobLoc.address.addressRegion]
+                .filter(Boolean)
+                .join(', '));
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore
+      }
+    }
+    
+    // 2. Try meta tags
+    const getMeta = (name) => {
+      const el = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+      return el ? (el.content || '') : '';
+    };
+    const metaLocation = getMeta('location') || getMeta('job:location') || getMeta('og:location');
+    if (metaLocation) possibleLocations.push(metaLocation);
+    
+    // 3. LinkedIn-specific extraction
+    // LinkedIn shows location in specific places - be more targeted
+    const linkedinLocationElement = document.querySelector('.jobs-unified-top-card__bullet, .job-details-jobs-unified-top-card__primary-description-without-tagline');
+    if (linkedinLocationElement) {
+      const text = linkedinLocationElement.textContent.trim();
+      if (text && text.length > 0 && text.length < 200) {
+        possibleLocations.push(text);
+      }
+    }
+    
+    // Also check for city, state in job description
+    const jobDescription = document.querySelector('.jobs-description-content, .jobs-description, [class*="job-description"]');
+    if (jobDescription) {
+      const descText = jobDescription.textContent;
+      // Look for "Location: City, State" or "based in City, State"
+      const locationInDesc = descText.match(/(?:Location|Based in|Office in|located in)[:\s]+([A-Z][a-z\s]+,\s*[A-Z]{2})/i);
+      if (locationInDesc && locationInDesc[1]) {
+        possibleLocations.push(locationInDesc[1]);
+      }
+    }
+    
+    // 4. Try common selectors
+    const locationSelectors = [
+      '.job-location',
+      '.location',
+      '[class*="location"]',
+      '[data-testid*="location"]',
+      '[itemprop="jobLocation"]',
+      '[itemprop="addressLocality"]'
+    ];
+    
+    for (const selector of locationSelectors) {
+      const element = document.querySelector(selector);
+      if (element && element.textContent) {
+        const text = element.textContent.trim();
+        if (text.length > 0 && text.length < 100) {
+          possibleLocations.push(text);
+        }
+      }
+    }
+    
+    // 5. Pattern matching in visible text for city, state patterns
+    const bodyText = document.body ? document.body.innerText.substring(0, 5000) : '';
+    const cityStatePattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2})\b/g;
+    let match;
+    while ((match = cityStatePattern.exec(bodyText)) !== null) {
+      possibleLocations.push(match[0]);
+    }
+    
+    // 6. Filter and prioritize locations
+    console.log('All possible locations found:', possibleLocations);
+    
+    // First pass: Look for explicit city, state format
+    for (const loc of possibleLocations) {
+      if (/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2}\b/.test(loc)) {
+        console.log('Found city, state format:', loc);
+        return loc;
+      }
+    }
+    
+    // Second pass: Extract city/state from sentences
+    for (const loc of possibleLocations) {
+      const cityStateMatch = loc.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),?\s*([A-Z]{2})\b/);
+      if (cityStateMatch) {
+        const extracted = `${cityStateMatch[1]}, ${cityStateMatch[2]}`;
+        console.log('Extracted from sentence:', extracted, 'from:', loc);
+        return extracted;
+      }
+    }
+    
+    // Third pass: Look for well-known city names
+    const majorCities = [
+      'New York', 'San Francisco', 'Los Angeles', 'Chicago', 'Boston', 
+      'Seattle', 'Austin', 'Denver', 'Portland', 'Miami', 'Atlanta',
+      'Dallas', 'Houston', 'Philadelphia', 'Phoenix', 'San Diego',
+      'Washington', 'London', 'Paris', 'Berlin', 'Tokyo', 'Singapore'
+    ];
+    
+    for (const loc of possibleLocations) {
+      for (const city of majorCities) {
+        if (loc.includes(city)) {
+          console.log('Found major city:', city, 'in:', loc);
+          return loc;
+        }
+      }
+    }
+    
+    // Fourth pass: Remove workplace types and return first non-remote location
+    const workplaceTypes = ['remote', 'hybrid', 'on-site', 'onsite', 'on site'];
+    const nonWorkplaceTypes = possibleLocations.filter(loc => {
+      const lower = loc.toLowerCase().trim();
+      return !workplaceTypes.includes(lower) && loc.length >= 2 && loc.length <= 100;
+    });
+    
+    if (nonWorkplaceTypes.length > 0) {
+      console.log('Using first non-workplace type location:', nonWorkplaceTypes[0]);
+      return nonWorkplaceTypes[0];
+    }
+    
+    // Fallback to any location (including "Remote")
+    if (possibleLocations.length > 0) {
+      console.log('Fallback to first location:', possibleLocations[0]);
+      return possibleLocations[0];
+    }
+    
+    console.log('No location found');
+    return '';
+  } catch (e) {
+    return '';
+  }
 }
 
 /**
@@ -286,6 +492,82 @@ function extractContent() {
       }
     }
 
+    // Extract job location
+    let location = '';
+    
+    // 1. Try structured data (schema.org JobPosting)
+    if (structuredData) {
+      if (structuredData['@type'] === 'JobPosting' && structuredData.jobLocation) {
+        const jobLoc = structuredData.jobLocation;
+        if (typeof jobLoc === 'string') {
+          location = jobLoc;
+        } else if (jobLoc.address) {
+          if (typeof jobLoc.address === 'string') {
+            location = jobLoc.address;
+          } else if (jobLoc.address.addressLocality || jobLoc.address.addressRegion) {
+            location = [jobLoc.address.addressLocality, jobLoc.address.addressRegion]
+              .filter(Boolean)
+              .join(', ');
+          }
+        }
+      }
+    }
+    
+    // 2. Try common meta tags
+    if (!location) {
+      location = getMeta('location') || getMeta('job:location') || getMeta('og:location');
+    }
+    
+    // 3. Try common selectors for job location
+    if (!location) {
+      const locationSelectors = [
+        '.job-location',
+        '.location',
+        '[class*="location"]',
+        '[data-testid*="location"]',
+        '[data-test*="location"]',
+        '[aria-label*="location"]',
+        '.job-info .location',
+        '.job-details .location',
+        '[itemprop="jobLocation"]',
+        '[itemprop="addressLocality"]'
+      ];
+      
+      for (const selector of locationSelectors) {
+        const element = document.querySelector(selector);
+        if (element && element.textContent) {
+          const text = element.textContent.trim();
+          // Only use if it's reasonably short (not a full paragraph)
+          if (text.length > 0 && text.length < 100) {
+            location = text;
+            break;
+          }
+        }
+      }
+    }
+    
+    // 4. Try pattern matching in the page for common location patterns
+    if (!location) {
+      const locationPatterns = [
+        /Location[:\s]+([^•\n]{3,50})/i,
+        /📍\s*([^•\n]{3,50})/,
+        /\bRemote\b/i,
+        /\b(?:San Francisco|New York|Los Angeles|Chicago|Boston|Seattle|Austin|Portland|Denver|Miami|Atlanta|Dallas|Houston|Washington,?\s*D\.?C\.?|London|Paris|Berlin|Tokyo|Singapore|Toronto|Vancouver|Sydney|Melbourne)/i
+      ];
+      
+      for (const pattern of locationPatterns) {
+        const match = mainContent.match(pattern);
+        if (match) {
+          location = match[1] ? match[1].trim() : match[0].trim();
+          // Clean up common artifacts
+          location = location.replace(/[\n\r\t]+/g, ' ').trim();
+          if (location.length > 0 && location.length < 100) {
+            break;
+          }
+        }
+      }
+    }
+
     // Truncate content to avoid token limits (roughly 12k chars ≈ 3k tokens)
     const maxLength = 12000;
     if (mainContent.length > maxLength) {
@@ -297,7 +579,8 @@ function extractContent() {
       url: window.location.href || '',
       description: getMeta('description') || getMeta('og:description'),
       content: mainContent,
-      structuredData
+      structuredData,
+      location: location || ''
     };
   } catch (e) {
     return {
@@ -305,7 +588,8 @@ function extractContent() {
       url: window.location.href || '',
       description: '',
       content: document.body ? document.body.innerText.substring(0, 12000) : '',
-      structuredData: null
+      structuredData: null,
+      location: ''
     };
   }
 }

@@ -3,7 +3,7 @@
  * Handles schema fetching, form generation, and page creation
  */
 
-import { NotionAPI, PropertyFormatters, getTabInfo, OpenAIHelper } from '../lib/notion-api.js';
+import { NotionAPI, PropertyFormatters, PropertyParsers, parseNotionPage, getTabInfo, OpenAIHelper } from '../lib/notion-api.js';
 
 // DOM Elements
 const loadingState = document.getElementById('loadingState');
@@ -18,6 +18,7 @@ const dbName = document.getElementById('dbName');
 const settingsBtn = document.getElementById('settingsBtn');
 const configureBtn = document.getElementById('configureBtn');
 const submitBtn = document.getElementById('submitBtn');
+const quickSaveBtn = document.getElementById('quickSaveBtn');
 const viewPageBtn = document.getElementById('viewPageBtn');
 const addAnotherBtn = document.getElementById('addAnotherBtn');
 const errorMessage = document.getElementById('errorMessage');
@@ -52,6 +53,61 @@ let tabInfo = null;
 let hasOpenAI = false;
 let hiddenFields = new Set(); // Track which fields are hidden
 let fieldOrder = []; // Track custom field order
+let existingPageId = null; // Track if we're editing an existing page
+let existingPageData = null; // Store existing page data
+
+/**
+ * Find URL field in database schema
+ * @param {Object} schema - Database schema
+ * @returns {string|null} URL field name or null
+ */
+function findUrlField(schema) {
+  for (const [name, property] of Object.entries(schema.properties)) {
+    if (property.type === 'url') {
+      return name;
+    }
+  }
+  return null;
+}
+
+/**
+ * Check for existing entry with same URL
+ */
+async function checkForExistingEntry() {
+  if (!tabInfo.url || !databaseSchema) {
+    return;
+  }
+
+  try {
+    // Find URL field in schema
+    const urlField = findUrlField(databaseSchema);
+    if (!urlField) {
+      console.log('No URL field found in database schema');
+      return;
+    }
+
+    console.log(`Checking for existing entry with URL: ${tabInfo.url}`);
+    
+    // Query for existing page with this URL
+    const existingPage = await notionApi.findPageByUrl(tabInfo.url, urlField);
+    
+    if (existingPage) {
+      console.log('Found existing entry:', existingPage.id);
+      existingPageId = existingPage.id;
+      existingPageData = parseNotionPage(existingPage, databaseSchema);
+      console.log('Parsed existing data:', existingPageData);
+    } else {
+      console.log('No existing entry found');
+      existingPageId = null;
+      existingPageData = null;
+    }
+  } catch (error) {
+    console.error('Error checking for existing entry:', error);
+    // Don't throw - just continue with new entry
+    existingPageId = null;
+    existingPageData = null;
+  }
+}
 
 /**
  * Initialize the extension popup
@@ -84,6 +140,15 @@ async function init() {
     hasOpenAI = !openaiKey.error;
 
     tabInfo = tabData.error ? { url: '', title: '' } : tabData;
+    
+    // Debug: Log extracted information
+    console.log('=== TAB INFO LOADED ===');
+    console.log('Title:', tabInfo.title || '(empty)');
+    console.log('Role Name:', tabInfo.roleName || '(not extracted)');
+    console.log('Company Name:', tabInfo.companyName || '(not extracted)');
+    console.log('Location:', tabInfo.location || '(not extracted)');
+    console.log('URL:', tabInfo.url || '(empty)');
+    console.log('======================');
 
     // Fetch database schema
     databaseSchema = await notionApi.getDatabase();
@@ -94,8 +159,12 @@ async function init() {
       loadFieldOrder()
     ]);
     
+    // Check for existing entry with same URL
+    await checkForExistingEntry();
+    
     // Render form
     renderForm(databaseSchema, tabInfo);
+    updateSubmitButton();
     showForm();
     
     // Show AI button if configured
@@ -245,12 +314,32 @@ function showForm() {
 }
 
 /**
+ * Update submit button text based on edit/create mode
+ */
+function updateSubmitButton() {
+  const btnText = submitBtn.querySelector('.btn-text');
+  const quickBtnText = quickSaveBtn.querySelector('.btn-text');
+  if (existingPageId) {
+    btnText.textContent = 'Update in Notion';
+    quickBtnText.textContent = 'Quick Update';
+  } else {
+    btnText.textContent = 'Save to Notion';
+    quickBtnText.textContent = 'Quick Save';
+  }
+}
+
+/**
  * Reset form to initial state
  */
 function resetForm() {
+  // Clear existing page data
+  existingPageId = null;
+  existingPageData = null;
+  
   // Re-render form with fresh tab data
   if (databaseSchema && tabInfo) {
     renderForm(databaseSchema, tabInfo);
+    updateSubmitButton();
   }
 }
 
@@ -352,6 +441,20 @@ async function toggleFieldVisibility(fieldName) {
 function renderForm(schema, tab) {
   formFields.innerHTML = '';
   
+  // Add editing indicator if we're editing an existing entry
+  if (existingPageId) {
+    const editingBanner = document.createElement('div');
+    editingBanner.className = 'editing-banner';
+    editingBanner.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+      </svg>
+      <span>Editing existing entry</span>
+    `;
+    formFields.appendChild(editingBanner);
+  }
+  
   const properties = schema.properties;
   
   // Get all visible properties
@@ -403,7 +506,7 @@ function renderForm(schema, tab) {
 
   // Render each property
   sortedProps.forEach(([name, property]) => {
-    const fieldElement = renderProperty(name, property, tab);
+    const fieldElement = renderProperty(name, property, tab, existingPageData);
     if (fieldElement) {
       formFields.appendChild(fieldElement);
     }
@@ -464,9 +567,10 @@ function updateHiddenFieldsSection(properties) {
  * @param {string} name - Property name
  * @param {Object} property - Property configuration
  * @param {Object} tab - Tab info for pre-population
+ * @param {Object} existingData - Existing data to pre-fill (if editing)
  * @returns {HTMLElement} Field element
  */
-function renderProperty(name, property, tab) {
+function renderProperty(name, property, tab, existingData = null) {
   const group = document.createElement('div');
   group.className = 'form-group';
   group.dataset.propertyName = name;
@@ -477,17 +581,17 @@ function renderProperty(name, property, tab) {
   labelContainer.className = 'label-container';
 
   const renderers = {
-    'title': () => renderTitleField(group, name, property, tab, labelContainer),
-    'rich_text': () => renderRichTextField(group, name, property, labelContainer),
-    'url': () => renderUrlField(group, name, property, tab, labelContainer),
-    'number': () => renderNumberField(group, name, property, labelContainer),
-    'checkbox': () => renderCheckboxField(group, name, property, labelContainer),
-    'select': () => renderSelectField(group, name, property, labelContainer),
-    'multi_select': () => renderMultiSelectField(group, name, property, labelContainer),
-    'date': () => renderDateField(group, name, property, labelContainer),
-    'email': () => renderEmailField(group, name, property, labelContainer),
-    'phone_number': () => renderPhoneField(group, name, property, labelContainer),
-    'status': () => renderStatusField(group, name, property, labelContainer)
+    'title': () => renderTitleField(group, name, property, tab, labelContainer, existingData),
+    'rich_text': () => renderRichTextField(group, name, property, labelContainer, existingData),
+    'url': () => renderUrlField(group, name, property, tab, labelContainer, existingData),
+    'number': () => renderNumberField(group, name, property, labelContainer, existingData),
+    'checkbox': () => renderCheckboxField(group, name, property, labelContainer, existingData),
+    'select': () => renderSelectField(group, name, property, labelContainer, existingData),
+    'multi_select': () => renderMultiSelectField(group, name, property, labelContainer, existingData),
+    'date': () => renderDateField(group, name, property, labelContainer, existingData),
+    'email': () => renderEmailField(group, name, property, labelContainer, existingData),
+    'phone_number': () => renderPhoneField(group, name, property, labelContainer, existingData),
+    'status': () => renderStatusField(group, name, property, labelContainer, existingData)
   };
 
   const renderer = renderers[property.type];
@@ -545,7 +649,7 @@ function createLabel(name, type, container) {
 /**
  * Render title field (pre-populated with page title)
  */
-function renderTitleField(group, name, property, tab, labelContainer) {
+function renderTitleField(group, name, property, tab, labelContainer, existingData) {
   createLabel(name, 'title', labelContainer);
   group.appendChild(labelContainer);
   
@@ -554,16 +658,145 @@ function renderTitleField(group, name, property, tab, labelContainer) {
   input.className = 'form-input';
   input.name = name;
   input.placeholder = 'Enter title...';
-  input.value = tab.title || '';
+  
+  // Use existing data if available, otherwise intelligently choose between roleName, companyName, or full title
+  let defaultValue = tab.title || '';
+  if (!existingData || !existingData[name]) {
+    if (isRoleField(name) && tab.roleName) {
+      defaultValue = tab.roleName;
+    } else if (isCompanyField(name) && tab.companyName) {
+      defaultValue = tab.companyName;
+    }
+  }
+  
+  input.value = (existingData && existingData[name]) || defaultValue;
   input.required = true;
   
   group.appendChild(input);
 }
 
 /**
+ * Check if field name suggests it's a location field
+ */
+function isLocationField(name) {
+  const lowercaseName = name.toLowerCase();
+  return lowercaseName.includes('location') || 
+         lowercaseName.includes('where') || 
+         lowercaseName.includes('city') ||
+         lowercaseName.includes('place');
+}
+
+/**
+ * Check if field name suggests it's a company field
+ */
+function isCompanyField(name) {
+  const lowercaseName = name.toLowerCase();
+  return lowercaseName === 'company' || 
+         lowercaseName === 'company name' ||
+         lowercaseName.includes('company') ||
+         lowercaseName === 'organization' ||
+         lowercaseName === 'employer';
+}
+
+/**
+ * Check if field name suggests it's a role/job title field
+ */
+function isRoleField(name) {
+  const lowercaseName = name.toLowerCase();
+  return lowercaseName === 'role' ||
+         lowercaseName === 'role name' ||
+         lowercaseName === 'job title' ||
+         lowercaseName === 'position' ||
+         lowercaseName === 'title' ||
+         lowercaseName.includes('job title') ||
+         lowercaseName.includes('position');
+}
+
+/**
+ * Find best matching option for location
+ * @param {string} extractedLocation - Location extracted from page
+ * @param {Array} options - Available select options
+ * @returns {string|null} Best matching option name or null
+ */
+function findBestLocationMatch(extractedLocation, options) {
+  if (!extractedLocation || !options || options.length === 0) {
+    return null;
+  }
+  
+  const location = extractedLocation.toLowerCase().trim();
+  
+  // 1. Try exact match (case-insensitive)
+  for (const option of options) {
+    if (option.name.toLowerCase() === location) {
+      return option.name;
+    }
+  }
+  
+  // 2. Try contains match (option contains extracted location)
+  for (const option of options) {
+    if (option.name.toLowerCase().includes(location)) {
+      return option.name;
+    }
+  }
+  
+  // 3. Try reverse contains (extracted location contains option)
+  for (const option of options) {
+    if (location.includes(option.name.toLowerCase())) {
+      return option.name;
+    }
+  }
+  
+  // 4. Check for "Remote" special case
+  if (location.includes('remote')) {
+    for (const option of options) {
+      if (option.name.toLowerCase().includes('remote')) {
+        return option.name;
+      }
+    }
+  }
+  
+  // 5. Check for common city/state patterns and abbreviations
+  const cityStatePatterns = [
+    { pattern: /san francisco|sf|bay area/i, keywords: ['san francisco', 'sf', 'bay area'] },
+    { pattern: /new york|nyc|ny(?!\w)/i, keywords: ['new york', 'nyc', 'ny'] },
+    { pattern: /los angeles|la(?!\w)/i, keywords: ['los angeles', 'la'] },
+    { pattern: /washington.*dc|dc(?!\w)/i, keywords: ['washington', 'dc'] },
+    { pattern: /boston|ma(?!\w)/i, keywords: ['boston', 'ma'] },
+    { pattern: /chicago|il(?!\w)/i, keywords: ['chicago', 'il'] },
+    { pattern: /seattle|wa(?!\w)/i, keywords: ['seattle', 'wa'] },
+    { pattern: /austin|tx(?!\w)/i, keywords: ['austin', 'tx'] },
+    { pattern: /denver|co(?!\w)/i, keywords: ['denver', 'co'] },
+  ];
+  
+  for (const { pattern, keywords } of cityStatePatterns) {
+    if (pattern.test(location)) {
+      for (const option of options) {
+        const optionLower = option.name.toLowerCase();
+        if (keywords.some(keyword => optionLower.includes(keyword))) {
+          return option.name;
+        }
+      }
+    }
+  }
+  
+  // 6. Extract state abbreviation if present and match
+  const stateMatch = location.match(/,\s*([A-Z]{2})\b/);
+  if (stateMatch) {
+    const state = stateMatch[1].toLowerCase();
+    for (const option of options) {
+      if (option.name.toLowerCase().includes(state)) {
+        return option.name;
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Render rich text field
  */
-function renderRichTextField(group, name, property, labelContainer) {
+function renderRichTextField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'text', labelContainer);
   group.appendChild(labelContainer);
   
@@ -572,13 +805,25 @@ function renderRichTextField(group, name, property, labelContainer) {
   textarea.name = name;
   textarea.placeholder = `Enter ${name.toLowerCase()}...`;
   
+  // Use existing data if available, otherwise intelligently pre-populate with role or company
+  let defaultValue = '';
+  if (!existingData || !existingData[name]) {
+    if (isRoleField(name) && tabInfo && tabInfo.roleName) {
+      defaultValue = tabInfo.roleName;
+    } else if (isCompanyField(name) && tabInfo && tabInfo.companyName) {
+      defaultValue = tabInfo.companyName;
+    }
+  }
+  
+  textarea.value = (existingData && existingData[name]) || defaultValue;
+  
   group.appendChild(textarea);
 }
 
 /**
  * Render URL field (pre-populated with current URL)
  */
-function renderUrlField(group, name, property, tab, labelContainer) {
+function renderUrlField(group, name, property, tab, labelContainer, existingData) {
   createLabel(name, 'url', labelContainer);
   group.appendChild(labelContainer);
   
@@ -587,7 +832,8 @@ function renderUrlField(group, name, property, tab, labelContainer) {
   input.className = 'form-input';
   input.name = name;
   input.placeholder = 'https://...';
-  input.value = tab.url || '';
+  // Use existing data if available, otherwise use tab URL
+  input.value = (existingData && existingData[name]) || tab.url || '';
   
   group.appendChild(input);
 }
@@ -595,7 +841,7 @@ function renderUrlField(group, name, property, tab, labelContainer) {
 /**
  * Render number field
  */
-function renderNumberField(group, name, property, labelContainer) {
+function renderNumberField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'number', labelContainer);
   group.appendChild(labelContainer);
   
@@ -605,6 +851,9 @@ function renderNumberField(group, name, property, labelContainer) {
   input.name = name;
   input.placeholder = '0';
   input.step = 'any';
+  if (existingData && existingData[name] !== undefined && existingData[name] !== '') {
+    input.value = existingData[name];
+  }
   
   group.appendChild(input);
 }
@@ -612,7 +861,7 @@ function renderNumberField(group, name, property, labelContainer) {
 /**
  * Render checkbox field
  */
-function renderCheckboxField(group, name, property, labelContainer) {
+function renderCheckboxField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'checkbox', labelContainer);
   group.appendChild(labelContainer);
   
@@ -624,6 +873,9 @@ function renderCheckboxField(group, name, property, labelContainer) {
   checkbox.className = 'form-checkbox';
   checkbox.name = name;
   checkbox.id = `checkbox-${name}`;
+  if (existingData && existingData[name] !== undefined) {
+    checkbox.checked = existingData[name];
+  }
   
   const label = document.createElement('label');
   label.className = 'checkbox-label';
@@ -638,7 +890,7 @@ function renderCheckboxField(group, name, property, labelContainer) {
 /**
  * Render select/dropdown field
  */
-function renderSelectField(group, name, property, labelContainer) {
+function renderSelectField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'select', labelContainer);
   group.appendChild(labelContainer);
   
@@ -662,13 +914,54 @@ function renderSelectField(group, name, property, labelContainer) {
     });
   }
   
+  // Set value from existing data or auto-detect location/company
+  let valueToSet = null;
+  if (existingData && existingData[name]) {
+    valueToSet = existingData[name];
+  } else if (isLocationField(name) && tabInfo && tabInfo.location && property.select?.options) {
+    // Try to match extracted location to available options
+    console.log(`🔍 Field "${name}" detected as location field`);
+    console.log(`🌍 Extracted location: "${tabInfo.location}"`);
+    console.log(`📋 Available options:`, property.select.options.map(o => o.name).join(', '));
+    
+    const matchedOption = findBestLocationMatch(tabInfo.location, property.select.options);
+    if (matchedOption) {
+      valueToSet = matchedOption;
+      console.log(`✅ Auto-matched location "${tabInfo.location}" to option "${matchedOption}"`);
+    } else {
+      console.log(`❌ Could not match location "${tabInfo.location}" to any option`);
+    }
+  } else if (isCompanyField(name) && tabInfo && tabInfo.companyName && property.select?.options) {
+    // Try to match extracted company to available options
+    const matchedOption = property.select.options.find(opt => 
+      opt.name.toLowerCase() === tabInfo.companyName.toLowerCase()
+    );
+    if (matchedOption) {
+      valueToSet = matchedOption.name;
+      console.log(`✅ Auto-matched company "${tabInfo.companyName}" to option "${matchedOption.name}"`);
+    }
+  } else if (isLocationField(name)) {
+    const debugInfo = {
+      hasTabInfo: !!tabInfo,
+      tabInfoLocation: tabInfo?.location || 'null',
+      hasOptions: !!(property.select?.options),
+      optionsCount: property.select?.options?.length || 0,
+      options: property.select?.options?.map(o => o.name) || []
+    };
+    console.log(`⚠️ Field "${name}" is location field but conditions not met:`, debugInfo);
+  }
+  
+  if (valueToSet) {
+    select.value = valueToSet;
+  }
+  
   group.appendChild(select);
 }
 
 /**
  * Render status field (similar to select but with status options)
  */
-function renderStatusField(group, name, property, labelContainer) {
+function renderStatusField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'status', labelContainer);
   group.appendChild(labelContainer);
   
@@ -692,13 +985,39 @@ function renderStatusField(group, name, property, labelContainer) {
     });
   }
   
+  // Set value from existing data or auto-detect location/company
+  let valueToSet = null;
+  if (existingData && existingData[name]) {
+    valueToSet = existingData[name];
+  } else if (isLocationField(name) && tabInfo && tabInfo.location && property.status?.options) {
+    // Try to match extracted location to available options
+    const matchedOption = findBestLocationMatch(tabInfo.location, property.status.options);
+    if (matchedOption) {
+      valueToSet = matchedOption;
+      console.log(`Auto-matched location "${tabInfo.location}" to status option "${matchedOption}"`);
+    }
+  } else if (isCompanyField(name) && tabInfo && tabInfo.companyName && property.status?.options) {
+    // Try to match extracted company to available options
+    const matchedOption = property.status.options.find(opt => 
+      opt.name.toLowerCase() === tabInfo.companyName.toLowerCase()
+    );
+    if (matchedOption) {
+      valueToSet = matchedOption.name;
+      console.log(`Auto-matched company "${tabInfo.companyName}" to status option "${matchedOption.name}"`);
+    }
+  }
+  
+  if (valueToSet) {
+    select.value = valueToSet;
+  }
+  
   group.appendChild(select);
 }
 
 /**
  * Render multi-select field with tags
  */
-function renderMultiSelectField(group, name, property, labelContainer) {
+function renderMultiSelectField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'tags', labelContainer);
   group.appendChild(labelContainer);
   
@@ -713,7 +1032,10 @@ function renderMultiSelectField(group, name, property, labelContainer) {
   const hiddenInput = document.createElement('input');
   hiddenInput.type = 'hidden';
   hiddenInput.name = name;
-  hiddenInput.value = '[]';
+  
+  // Get existing values
+  const existingValues = (existingData && existingData[name]) || [];
+  const existingValuesSet = new Set(existingValues);
   
   // Add tag options
   if (property.multi_select?.options) {
@@ -724,6 +1046,11 @@ function renderMultiSelectField(group, name, property, labelContainer) {
       tag.dataset.value = option.name;
       tag.dataset.color = option.color || 'default';
       
+      // Pre-select if in existing data
+      if (existingValuesSet.has(option.name)) {
+        tag.classList.add('selected');
+      }
+      
       tag.addEventListener('click', () => {
         tag.classList.toggle('selected');
         updateMultiSelectValue(tagsContainer, hiddenInput);
@@ -732,6 +1059,9 @@ function renderMultiSelectField(group, name, property, labelContainer) {
       tagsContainer.appendChild(tag);
     });
   }
+  
+  // Set hidden input value
+  hiddenInput.value = JSON.stringify(existingValues);
   
   container.appendChild(tagsContainer);
   container.appendChild(hiddenInput);
@@ -750,7 +1080,7 @@ function updateMultiSelectValue(container, input) {
 /**
  * Render date field
  */
-function renderDateField(group, name, property, labelContainer) {
+function renderDateField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'date', labelContainer);
   group.appendChild(labelContainer);
   
@@ -758,6 +1088,18 @@ function renderDateField(group, name, property, labelContainer) {
   input.type = 'date';
   input.className = 'form-input';
   input.name = name;
+  if (existingData && existingData[name]) {
+    // Ensure date format is YYYY-MM-DD
+    const dateValue = existingData[name];
+    if (dateValue) {
+      const date = new Date(dateValue);
+      if (!isNaN(date.getTime())) {
+        input.value = date.toISOString().split('T')[0];
+      } else {
+        input.value = dateValue;
+      }
+    }
+  }
   
   group.appendChild(input);
 }
@@ -765,7 +1107,7 @@ function renderDateField(group, name, property, labelContainer) {
 /**
  * Render email field
  */
-function renderEmailField(group, name, property, labelContainer) {
+function renderEmailField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'email', labelContainer);
   group.appendChild(labelContainer);
   
@@ -774,6 +1116,7 @@ function renderEmailField(group, name, property, labelContainer) {
   input.className = 'form-input';
   input.name = name;
   input.placeholder = 'email@example.com';
+  input.value = (existingData && existingData[name]) || '';
   
   group.appendChild(input);
 }
@@ -781,7 +1124,7 @@ function renderEmailField(group, name, property, labelContainer) {
 /**
  * Render phone field
  */
-function renderPhoneField(group, name, property, labelContainer) {
+function renderPhoneField(group, name, property, labelContainer, existingData) {
   createLabel(name, 'phone', labelContainer);
   group.appendChild(labelContainer);
   
@@ -790,6 +1133,7 @@ function renderPhoneField(group, name, property, labelContainer) {
   input.className = 'form-input';
   input.name = name;
   input.placeholder = '+1 (555) 000-0000';
+  input.value = (existingData && existingData[name]) || '';
   
   group.appendChild(input);
 }
@@ -803,19 +1147,39 @@ async function handleSubmit(e) {
   
   const btnText = submitBtn.querySelector('.btn-text');
   const btnLoading = submitBtn.querySelector('.btn-loading');
+  const quickBtnText = quickSaveBtn.querySelector('.btn-text');
+  const quickBtnLoading = quickSaveBtn.querySelector('.btn-loading');
   
-  // Show loading state
+  // Show loading state on both buttons
   submitBtn.disabled = true;
+  quickSaveBtn.disabled = true;
   btnText.classList.add('hidden');
   btnLoading.classList.remove('hidden');
+  quickBtnText.classList.add('hidden');
+  quickBtnLoading.classList.remove('hidden');
 
   try {
     const properties = buildPayload();
-    const result = await notionApi.createPage(properties);
+    let result;
+    let pageUrl;
     
-    // Build Notion page URL
-    const pageId = result.id.replace(/-/g, '');
-    const pageUrl = `https://notion.so/${pageId}`;
+    if (existingPageId) {
+      // Update existing page
+      console.log('Updating existing page:', existingPageId);
+      result = await notionApi.updatePage(existingPageId, properties);
+      
+      // Build Notion page URL
+      const pageId = existingPageId.replace(/-/g, '');
+      pageUrl = `https://notion.so/${pageId}`;
+    } else {
+      // Create new page
+      console.log('Creating new page');
+      result = await notionApi.createPage(properties);
+      
+      // Build Notion page URL
+      const pageId = result.id.replace(/-/g, '');
+      pageUrl = `https://notion.so/${pageId}`;
+    }
     
     showSuccess(pageUrl);
     
@@ -825,8 +1189,11 @@ async function handleSubmit(e) {
     
   } finally {
     submitBtn.disabled = false;
+    quickSaveBtn.disabled = false;
     btnText.classList.remove('hidden');
     btnLoading.classList.add('hidden');
+    quickBtnText.classList.remove('hidden');
+    quickBtnLoading.classList.add('hidden');
   }
 }
 

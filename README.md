@@ -6,6 +6,8 @@ A schema-aware Chrome Extension that dynamically bridges your browser with any N
 
 - **Dynamic Schema Detection**: Automatically fetches and renders form fields based on your Notion database properties
 - **Auto-Population**: Pre-fills URL and Title fields with the current page data
+- **Duplicate Detection**: Automatically detects existing entries with the same URL and loads them for editing
+- **Update Existing Entries**: Seamlessly update existing database rows instead of creating duplicates
 - **AI-Powered Auto-Fill**: Uses OpenAI to read page content and intelligently fill all form fields
 - **Multi-Type Support**: Handles title, rich_text, url, select, multi_select, checkbox, number, date, email, phone, and status properties
 - **Notion-Inspired UI**: Dark theme interface that matches the Notion aesthetic
@@ -18,15 +20,17 @@ A schema-aware Chrome Extension that dynamically bridges your browser with any N
 |-------------|--------------|----------------|
 | Title | Text input | ✅ (page title) |
 | URL | URL input | ✅ (current URL) |
+| Select | Dropdown | ✅ (location fields) |
+| Status | Dropdown | ✅ (location fields) |
 | Rich Text | Textarea | ❌ |
-| Select | Dropdown | ❌ |
 | Multi-Select | Tag selector | ❌ |
-| Status | Dropdown | ❌ |
 | Checkbox | Checkbox | ❌ |
 | Number | Number input | ❌ |
 | Date | Date picker | ❌ |
 | Email | Email input | ❌ |
 | Phone | Phone input | ❌ |
+
+**Note**: Select/Status fields with "location", "where", "city", or "place" in their name will automatically match the extracted location against your predefined options and select the best match.
 
 ## Installation
 
@@ -96,13 +100,62 @@ The Database ID is the 32-character string before `?v=`
 
 1. Navigate to any webpage you want to save
 2. Click the Save to Tracker extension icon
-3. The form will automatically populate with:
-   - Page title → Title field
-   - Page URL → URL field
+3. The extension will:
+   - Check if an entry with the same URL already exists in your database
+   - If found, load all existing data into the form for editing (displays "Editing existing entry" banner)
+   - If not found, create a new form pre-filled with page title and URL
 4. **Optional**: Click the **Add Details** button to automatically extract and fill all fields from the page
 5. Review and adjust any fields as needed
-6. Click **Save to Notion**
-7. Click **View in Notion** to open the new page
+6. Click **Save to Notion** (for new entries) or **Update in Notion** (for existing entries)
+7. Click **View in Notion** to open the page
+
+### Duplicate Detection
+
+The extension automatically prevents duplicates by:
+- Searching your database for entries with the same URL when you open the popup
+- Loading existing data if found, allowing you to update instead of creating a duplicate
+- Showing a green "Editing existing entry" banner when you're updating an existing page
+- Changing the submit button text from "Save to Notion" to "Update in Notion"
+
+**Note**: This feature requires your database to have a URL field. If no URL field exists, each popup will create a new entry.
+
+### Automatic Location Detection
+
+The extension automatically extracts job location from the page without requiring AI or manual input:
+
+**How it works:**
+1. **Extract Location** - Reads location from the page using:
+   - Schema.org JobPosting structured data (JSON-LD)
+   - Meta tags (`location`, `job:location`, `og:location`)
+   - HTML elements with location-related class names or attributes
+   - Pattern matching in page text (e.g., "Location: San Francisco", "📍 Remote")
+
+2. **Smart Matching** - For Select/Status fields, matches the extracted location to your predefined options:
+   - **Exact match** - "San Francisco" → "San Francisco"
+   - **Contains match** - "San Francisco, CA" → "San Francisco"
+   - **Reverse contains** - "SF Bay Area" → "San Francisco"
+   - **Remote detection** - Any mention of "remote" → "Remote" option
+   - **City abbreviations** - "SF", "NYC", "LA" → Full city names
+
+**To use this feature:**
+1. Create a **Select** or **Status** field in your Notion database
+2. Add your location options (e.g., "Remote", "San Francisco", "New York", "London")
+3. Name the field with "location" in it (e.g., "Location", "Job Location", "Where")
+4. The extension will automatically detect and select the best matching option
+
+**Example:**
+- Your options: `["Remote", "San Francisco", "New York", "Hybrid"]`
+- Page says: "📍 Remote - San Francisco Bay Area"
+- Extension selects: `"Remote"` (first match)
+
+**Supported formats:**
+- City, State (e.g., "San Francisco, CA")
+- Remote positions
+- Multiple locations
+- International locations
+- City abbreviations (SF, NYC, LA, DC)
+
+This works on most major job boards including LinkedIn, Indeed, Greenhouse, Lever, and others that use standard structured data or common HTML patterns.
 
 ### Add Details Feature
 

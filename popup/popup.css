@@ -665,6 +665,21 @@ body {
   height: 14px;
 }
 
+/* Quick Save Container (Top) */
+.quick-save-container {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.btn-quick-save {
+  padding: 6px 14px;
+  font-size: 13px;
+  min-width: 110px;
+}
+
 /* Form Actions */
 .form-actions {
   margin-top: 20px;
@@ -1188,5 +1203,24 @@ input[type="date"] {
   font-size: 12px;
   color: var(--text-tertiary);
   text-align: right;
+}
+
+/* Editing Banner */
+.editing-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  background: rgba(46, 204, 113, 0.12);
+  border: 1px solid rgba(46, 204, 113, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.editing-banner svg {
+  flex-shrink: 0;
 }
 
