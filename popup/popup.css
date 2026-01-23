@@ -104,6 +104,25 @@ body {
   gap: 8px;
 }
 
+.help-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.help-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 .settings-btn {
   display: flex;
   align-items: center;
@@ -121,6 +140,43 @@ body {
 .settings-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.refresh-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.refresh-btn.refreshing svg {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* AI Fill Button */
@@ -668,7 +724,9 @@ body {
 /* Quick Save Container (Top) */
 .quick-save-container {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border-color);
@@ -678,6 +736,7 @@ body {
   padding: 6px 14px;
   font-size: 13px;
   min-width: 110px;
+  margin-left: auto;
 }
 
 /* Form Actions */
@@ -1085,6 +1144,83 @@ input[type="date"] {
 
 .modal-body::-webkit-scrollbar-thumb:hover {
   background: var(--bg-hover);
+}
+
+/* Shortcuts Modal */
+.shortcuts-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shortcuts-content {
+  max-width: 420px;
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shortcut-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 14px 18px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.shortcut-action {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.shortcut-keys {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent-primary);
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  font-family: var(--font-sans);
+}
+
+.shortcuts-note {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--accent-light);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.shortcuts-note:first-of-type {
+  margin-top: 0;
+}
+
+.shortcuts-note code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-primary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--accent-primary);
+  word-break: break-all;
 }
 
 /* Debug Modal */

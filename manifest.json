@@ -11,7 +11,8 @@
   ],
   "host_permissions": [
     "https://api.notion.com/*",
-    "https://api.openai.com/*"
+    "https://api.openai.com/*",
+    "https://sheets.googleapis.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -30,6 +31,29 @@
     "16": "assets/icon16.png",
     "48": "assets/icon48.png",
     "128": "assets/icon128.png"
+  },
+  "commands": {
+    "open-popup": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Open extension popup"
+    },
+    "add-details": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
+      },
+      "description": "Add details using AI"
+    },
+    "quick-save": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Quick save to Notion"
+    }
   }
 }
 

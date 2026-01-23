@@ -41,6 +41,9 @@ async function handleMessage(request) {
     case 'GET_PAGE_CONTENT':
       return await getPageContent();
     
+    case 'SHEETS_API_REQUEST':
+      return await handleSheetsRequest(request.payload);
+    
     default:
       throw new Error('Unknown request type: ' + request.type);
   }
@@ -102,7 +105,7 @@ async function handleNotionRequest(payload) {
 }
 
 /**
- * Get active tab URL, title, and location
+ * Get active tab URL, title, location, and selected text
  * @returns {Promise<Object>} Tab information
  */
 async function getActiveTabInfo() {
@@ -113,8 +116,9 @@ async function getActiveTabInfo() {
   }
 
   let location = '';
+  let selectedText = '';
   
-  // Try to extract location from the page
+  // Try to extract location and selected text from the page
   try {
     const url = tab.url || '';
     // Skip chrome:// and other restricted pages
@@ -126,19 +130,28 @@ async function getActiveTabInfo() {
       
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: extractLocationOnly
+        func: extractLocationAndSelection
       });
       
       if (results && results[0] && results[0].result) {
-        location = results[0].result;
-        console.log('📍 Location extracted from page:', location);
-      } else {
-        console.log('⚠️ No location extracted from page');
+        const extracted = results[0].result;
+        location = extracted.location || '';
+        selectedText = extracted.selectedText || '';
+        
+        if (location) {
+          console.log('📍 Location extracted from page:', location);
+        } else {
+          console.log('⚠️ No location extracted from page');
+        }
+        
+        if (selectedText) {
+          console.log('✂️ Selected text captured:', selectedText.substring(0, 100) + (selectedText.length > 100 ? '...' : ''));
+        }
       }
     }
   } catch (e) {
-    console.log('❌ Could not extract location:', e.message);
-    // Silently fail - location is optional
+    console.log('❌ Could not extract from page:', e.message);
+    // Silently fail - these are optional
   }
 
   // Parse LinkedIn-style titles: "Role Name | Company | LinkedIn"
@@ -168,14 +181,15 @@ async function getActiveTabInfo() {
     title: tab.title || '',
     roleName: roleName,
     companyName: companyName,
-    location: location || ''
+    location: location || '',
+    selectedText: selectedText || ''
   };
 }
 
 /**
- * Extract only location from page - lightweight version for tab info
+ * Extract location and selected text from page
  */
-function extractLocationOnly() {
+function extractLocationAndSelection() {
   try {
     let location = '';
     let possibleLocations = [];
@@ -264,11 +278,25 @@ function extractLocationOnly() {
     // 6. Filter and prioritize locations
     console.log('All possible locations found:', possibleLocations);
     
+    // Extract selected text first
+    let selectedText = '';
+    try {
+      const selection = window.getSelection();
+      if (selection && selection.toString()) {
+        selectedText = selection.toString().trim();
+      }
+    } catch (e) {
+      console.log('Could not get selection:', e);
+    }
+    
     // First pass: Look for explicit city, state format
     for (const loc of possibleLocations) {
       if (/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2}\b/.test(loc)) {
         console.log('Found city, state format:', loc);
-        return loc;
+        return {
+          location: loc,
+          selectedText: selectedText
+        };
       }
     }
     
@@ -278,7 +306,10 @@ function extractLocationOnly() {
       if (cityStateMatch) {
         const extracted = `${cityStateMatch[1]}, ${cityStateMatch[2]}`;
         console.log('Extracted from sentence:', extracted, 'from:', loc);
-        return extracted;
+        return {
+          location: extracted,
+          selectedText: selectedText
+        };
       }
     }
     
@@ -294,7 +325,10 @@ function extractLocationOnly() {
       for (const city of majorCities) {
         if (loc.includes(city)) {
           console.log('Found major city:', city, 'in:', loc);
-          return loc;
+          return {
+            location: loc,
+            selectedText: selectedText
+          };
         }
       }
     }
@@ -308,19 +342,32 @@ function extractLocationOnly() {
     
     if (nonWorkplaceTypes.length > 0) {
       console.log('Using first non-workplace type location:', nonWorkplaceTypes[0]);
-      return nonWorkplaceTypes[0];
+      return {
+        location: nonWorkplaceTypes[0],
+        selectedText: selectedText
+      };
     }
     
     // Fallback to any location (including "Remote")
     if (possibleLocations.length > 0) {
       console.log('Fallback to first location:', possibleLocations[0]);
-      return possibleLocations[0];
+      return {
+        location: possibleLocations[0],
+        selectedText: selectedText
+      };
     }
     
     console.log('No location found');
-    return '';
+    
+    return {
+      location: '',
+      selectedText: selectedText
+    };
   } catch (e) {
-    return '';
+    return {
+      location: '',
+      selectedText: ''
+    };
   }
 }
 
@@ -366,6 +413,60 @@ async function handleOpenAIRequest(payload) {
     }
     if (response.status === 402) {
       throw new Error('OpenAI billing issue. Please check your account.');
+    }
+    
+    throw new Error(errorMessage);
+  }
+
+  return { success: true, data };
+}
+
+/**
+ * Proxy Google Sheets API requests
+ * @param {Object} payload - Request configuration
+ * @returns {Promise<Object>} API response
+ */
+async function handleSheetsRequest(payload) {
+  const { endpoint, method = 'GET', body, apiKey, spreadsheetId } = payload;
+  
+  if (!apiKey) {
+    throw new Error('Google API key not configured');
+  }
+
+  if (!spreadsheetId) {
+    throw new Error('Spreadsheet ID not configured');
+  }
+
+  const baseUrl = 'https://sheets.googleapis.com/v4/spreadsheets';
+  const url = `${baseUrl}/${spreadsheetId}${endpoint}${endpoint.includes('?') ? '&' : '?'}key=${apiKey}`;
+
+  const config = {
+    method,
+    headers: {
+      'Content-Type': 'application/json'
+    }
+  };
+
+  if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+    config.body = JSON.stringify(body);
+  }
+
+  console.log('Making Sheets request:', method, endpoint);
+
+  const response = await fetch(url, config);
+  const data = await response.json();
+
+  if (!response.ok) {
+    const errorMessage = data.error?.message || `API Error: ${response.status}`;
+    
+    if (response.status === 403) {
+      throw new Error('Access denied. Check your API key and ensure Sheets API is enabled.');
+    }
+    if (response.status === 404) {
+      throw new Error('Spreadsheet not found. Please verify the Spreadsheet ID.');
+    }
+    if (response.status === 429) {
+      throw new Error('Rate limited. Please wait a moment and try again.');
     }
     
     throw new Error(errorMessage);
@@ -600,3 +701,147 @@ chrome.runtime.onInstalled.addListener((details) => {
     chrome.runtime.openOptionsPage();
   }
 });
+
+/**
+ * Handle keyboard shortcuts
+ */
+chrome.commands.onCommand.addListener(async (command) => {
+  console.log('Command received:', command);
+  
+  switch (command) {
+    case 'open-popup':
+      await handleOpenPopup();
+      break;
+    
+    case 'add-details':
+      await handleAddDetails();
+      break;
+    
+    case 'quick-save':
+      await handleQuickSave();
+      break;
+  }
+});
+
+/**
+ * Handle open popup command
+ * Try multiple approaches to open the popup
+ */
+async function handleOpenPopup() {
+  console.log('Attempting to open popup...');
+  
+  // Approach 1: Try to open the popup directly
+  try {
+    await chrome.action.openPopup();
+    console.log('Popup opened successfully');
+    return;
+  } catch (error) {
+    console.log('Cannot open popup directly:', error.message);
+  }
+  
+  // Approach 2: Try to focus existing popup
+  try {
+    const sent = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'FOCUS_POPUP' }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+    });
+    
+    if (sent) {
+      console.log('Focused existing popup');
+      return;
+    }
+  } catch (e) {
+    console.log('Could not focus popup');
+  }
+  
+  // Approach 3: Open popup in a new window (as fallback)
+  try {
+    const popupUrl = chrome.runtime.getURL('popup/popup.html');
+    const window = await chrome.windows.create({
+      url: popupUrl,
+      type: 'popup',
+      width: 400,
+      height: 600,
+      focused: true
+    });
+    console.log('Opened popup in new window');
+    return;
+  } catch (error) {
+    console.log('Could not open popup window:', error.message);
+  }
+  
+  // Approach 4: Show badge as last resort
+  chrome.action.setBadgeText({ text: '!' });
+  chrome.action.setBadgeBackgroundColor({ color: '#4285f4' });
+  setTimeout(() => {
+    chrome.action.setBadgeText({ text: '' });
+  }, 3000);
+  console.log('Popup could not be opened - showing badge notification');
+}
+
+/**
+ * Handle add details command
+ * Sends message to popup if open, otherwise shows notification
+ */
+async function handleAddDetails() {
+  // Try to send message to popup
+  // Note: This will only work if popup is already open
+  try {
+    chrome.runtime.sendMessage({ type: 'TRIGGER_ADD_DETAILS' }, (response) => {
+      if (chrome.runtime.lastError) {
+        // Popup not open or no listener
+        console.log('Popup not open for Add Details command');
+        showNotification('Please open the extension popup first, then use Ctrl+Shift+E');
+      } else {
+        console.log('Add Details triggered successfully');
+      }
+    });
+  } catch (error) {
+    console.error('Error handling Add Details command:', error);
+    showNotification('Please open the extension popup first, then use Ctrl+Shift+U');
+  }
+}
+
+/**
+ * Handle quick save command
+ * Sends message to popup if open, otherwise shows notification
+ */
+async function handleQuickSave() {
+  // Try to send message to popup
+  // Note: This will only work if popup is already open
+  try {
+    chrome.runtime.sendMessage({ type: 'TRIGGER_QUICK_SAVE' }, (response) => {
+      if (chrome.runtime.lastError) {
+        // Popup not open or no listener
+        console.log('Popup not open for Quick Save command');
+        showNotification('Please open the extension popup first, then use Ctrl+Shift+Y');
+      } else {
+        console.log('Quick Save triggered successfully');
+      }
+    });
+  } catch (error) {
+    console.error('Error handling Quick Save command:', error);
+        showNotification('Please open the extension popup first, then use Ctrl+Shift+Y');
+  }
+}
+
+/**
+ * Show a notification to the user
+ * @param {string} message - Message to display
+ */
+function showNotification(message) {
+  // Try to show a badge as visual feedback
+  chrome.action.setBadgeText({ text: '!' });
+  chrome.action.setBadgeBackgroundColor({ color: '#4285f4' });
+  setTimeout(() => {
+    chrome.action.setBadgeText({ text: '' });
+  }, 3000);
+  
+  // Also log to console for debugging
+  console.log('Notification:', message);
+}

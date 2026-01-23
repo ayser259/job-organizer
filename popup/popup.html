@@ -18,29 +18,25 @@
         <span>Save to Tracker</span>
       </div>
       <div class="header-actions">
-        <button class="ai-btn hidden" id="aiBtn" title="Add Details">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
-            <circle cx="8" cy="14" r="1"/>
-            <circle cx="16" cy="14" r="1"/>
-          </svg>
-          <span class="ai-btn-text">Add Details</span>
-          <span class="ai-btn-loading hidden">
-            <span class="spinner-tiny"></span>
-          </span>
-        </button>
-        <button class="customize-btn" id="customizeBtn" title="Customize Fields">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 20h9"></path>
-            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-          </svg>
-          <span>Customize</span>
-        </button>
         <button class="debug-btn hidden" id="debugBtn" title="View Extracted Content (Debug)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="12" y1="16" x2="12" y2="12"></line>
             <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </button>
+        <button class="refresh-btn hidden" id="refreshBtn" title="Refresh Schema">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
+        <button class="help-btn" id="helpBtn" title="Keyboard Shortcuts">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
           </svg>
         </button>
         <button class="settings-btn" id="settingsBtn" title="Settings">
@@ -92,6 +88,24 @@
       <form class="form hidden" id="clipperForm">
         <!-- Quick Save Button (Top) -->
         <div class="quick-save-container">
+          <button class="ai-btn hidden" id="aiBtn" title="Add Details">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2z"/>
+              <circle cx="8" cy="14" r="1"/>
+              <circle cx="16" cy="14" r="1"/>
+            </svg>
+            <span class="ai-btn-text">Add Details</span>
+            <span class="ai-btn-loading hidden">
+              <span class="spinner-tiny"></span>
+            </span>
+          </button>
+          <button class="customize-btn" id="customizeBtn" title="Customize Fields">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+            </svg>
+            <span>Customize</span>
+          </button>
           <button type="submit" class="btn btn-primary btn-quick-save" id="quickSaveBtn">
             <span class="btn-text">Quick Save</span>
             <span class="btn-loading hidden">
@@ -238,6 +252,48 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" id="cancelCustomize">Cancel</button>
           <button class="btn btn-primary" id="saveCustomize">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Keyboard Shortcuts Modal -->
+    <div class="shortcuts-modal hidden" id="shortcutsModal">
+      <div class="modal-overlay" id="shortcutsModalOverlay"></div>
+      <div class="modal-content shortcuts-content">
+        <div class="modal-header">
+          <h2>Keyboard Shortcuts</h2>
+          <button class="modal-close" id="shortcutsModalClose">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="shortcuts-list">
+            <div class="shortcut-item">
+              <div class="shortcut-action">Open Extension Popup</div>
+              <div class="shortcut-keys" id="shortcut-open" aria-label="Keyboard shortcut">Control + Shift + L</div>
+            </div>
+            <div class="shortcut-item">
+              <div class="shortcut-action">Add Details</div>
+              <div class="shortcut-keys" id="shortcut-add-details" aria-label="Keyboard shortcut">Control + Shift + E</div>
+            </div>
+            <div class="shortcut-item">
+              <div class="shortcut-action">Quick Save</div>
+              <div class="shortcut-keys" id="shortcut-quick-save" aria-label="Keyboard shortcut">Control + Shift + Y</div>
+            </div>
+          </div>
+          <p class="shortcuts-note">
+            <strong>Assign shortcuts:</strong> Open <code>chrome://extensions/shortcuts</code>, find "Save to Tracker", 
+            and set keys for each action. If they show "Not set", click and press your desired keys.
+          </p>
+          <p class="shortcuts-note">
+            Shortcuts only work when this popup is already open. Open the popup first, then use the keys.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="closeShortcutsBtn">Close</button>
         </div>
       </div>
     </div>

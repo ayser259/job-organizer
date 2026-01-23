@@ -133,6 +133,13 @@ body {
   font-size: 13px;
   color: var(--text-secondary);
   margin-bottom: 4px;
+  line-height: 1.6;
+}
+
+.form-hint strong {
+  color: var(--text-primary);
+  display: block;
+  margin-bottom: 6px;
 }
 
 .form-hint a {
@@ -215,6 +222,83 @@ body {
 
 .form-input:invalid:not(:placeholder-shown) {
   border-color: var(--error);
+}
+
+/* Google Sheets Section */
+.sheets-section {
+  border: 1px solid rgba(52, 168, 83, 0.2);
+  background: linear-gradient(135deg, rgba(52, 168, 83, 0.05) 0%, var(--bg-secondary) 100%);
+}
+
+.sheets-section .section-title svg {
+  color: #34a853;
+}
+
+.sheets-config {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.sheets-status {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Toggle Switch */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-checkbox {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  transition: all var(--transition-normal);
+  flex-shrink: 0;
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: var(--text-tertiary);
+  border-radius: 50%;
+  transition: all var(--transition-normal);
+}
+
+.toggle-checkbox:checked + .toggle-switch {
+  background: #34a853;
+  border-color: #34a853;
+}
+
+.toggle-checkbox:checked + .toggle-switch::after {
+  transform: translateX(20px);
+  background: white;
+}
+
+.toggle-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 /* OpenAI Section */
@@ -396,6 +480,14 @@ body {
   margin-bottom: 20px;
 }
 
+.help-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 32px;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+}
+
 .setup-steps {
   list-style: none;
   counter-reset: steps;
@@ -470,6 +562,22 @@ body {
   padding: 2px 6px;
   background: var(--bg-tertiary);
   border-radius: var(--radius-sm);
+}
+
+.help-note {
+  margin-top: 24px;
+  padding: 16px;
+  background: var(--accent-light);
+  border-left: 3px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.help-note strong {
+  color: var(--accent-primary);
+  display: block;
+  margin-bottom: 4px;
 }
 
 /* Toast */

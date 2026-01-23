@@ -11,6 +11,16 @@ const toggleSecretBtn = document.getElementById('toggleSecret');
 const testBtn = document.getElementById('testBtn');
 const saveBtn = document.getElementById('saveBtn');
 
+// Google Sheets Elements
+const sheetsEnabledCheckbox = document.getElementById('sheetsEnabled');
+const sheetsConfig = document.getElementById('sheetsConfig');
+const sheetsApiKeyInput = document.getElementById('sheetsApiKey');
+const spreadsheetIdInput = document.getElementById('spreadsheetId');
+const sheetNameInput = document.getElementById('sheetName');
+const toggleSheetsBtn = document.getElementById('toggleSheets');
+const sheetsDot = document.getElementById('sheetsDot');
+const sheetsStatusText = document.getElementById('sheetsStatusText');
+
 // OpenAI Elements
 const openaiApiKeyInput = document.getElementById('openaiApiKey');
 const toggleOpenAIBtn = document.getElementById('toggleOpenAI');
@@ -40,7 +50,15 @@ async function init() {
  */
 async function loadSavedSettings() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['notionSecret', 'databaseId', 'openaiApiKey'], (result) => {
+    chrome.storage.local.get([
+      'notionSecret', 
+      'databaseId', 
+      'openaiApiKey',
+      'sheetsEnabled',
+      'sheetsApiKey',
+      'spreadsheetId',
+      'sheetName'
+    ], (result) => {
       if (result.notionSecret) {
         notionSecretInput.value = result.notionSecret;
       }
@@ -50,6 +68,24 @@ async function loadSavedSettings() {
       if (result.openaiApiKey) {
         openaiApiKeyInput.value = result.openaiApiKey;
         updateOpenAIStatus('configured');
+      }
+      
+      // Load Google Sheets settings
+      if (result.sheetsEnabled !== undefined) {
+        sheetsEnabledCheckbox.checked = result.sheetsEnabled;
+        if (result.sheetsEnabled) {
+          sheetsConfig.classList.remove('hidden');
+        }
+      }
+      if (result.sheetsApiKey) {
+        sheetsApiKeyInput.value = result.sheetsApiKey;
+        updateSheetsStatus('configured');
+      }
+      if (result.spreadsheetId) {
+        spreadsheetIdInput.value = result.spreadsheetId;
+      }
+      if (result.sheetName) {
+        sheetNameInput.value = result.sheetName;
       }
       
       // If we have saved credentials, test the connection
@@ -75,6 +111,38 @@ function setupEventListeners() {
     const eyeClosed = toggleSecretBtn.querySelector('.eye-closed');
     eyeOpen.classList.toggle('hidden');
     eyeClosed.classList.toggle('hidden');
+  });
+
+  // Toggle Google Sheets config visibility
+  sheetsEnabledCheckbox.addEventListener('change', () => {
+    if (sheetsEnabledCheckbox.checked) {
+      sheetsConfig.classList.remove('hidden');
+    } else {
+      sheetsConfig.classList.add('hidden');
+    }
+  });
+
+  // Toggle Sheets key visibility
+  toggleSheetsBtn.addEventListener('click', () => {
+    const isPassword = sheetsApiKeyInput.type === 'password';
+    sheetsApiKeyInput.type = isPassword ? 'text' : 'password';
+    
+    const eyeOpen = toggleSheetsBtn.querySelector('.eye-open');
+    const eyeClosed = toggleSheetsBtn.querySelector('.eye-closed');
+    eyeOpen.classList.toggle('hidden');
+    eyeClosed.classList.toggle('hidden');
+  });
+
+  // Update Sheets status on input
+  sheetsApiKeyInput.addEventListener('input', () => {
+    const value = sheetsApiKeyInput.value.trim();
+    if (value && value.startsWith('AIza')) {
+      updateSheetsStatus('ready');
+    } else if (value) {
+      updateSheetsStatus('invalid');
+    } else {
+      updateSheetsStatus('empty');
+    }
   });
 
   // Toggle OpenAI key visibility
@@ -121,6 +189,33 @@ function setupEventListeners() {
     
     e.target.value = value;
   });
+}
+
+/**
+ * Update Google Sheets status indicator
+ * @param {string} state - 'configured', 'ready', 'invalid', 'empty'
+ */
+function updateSheetsStatus(state) {
+  sheetsDot.classList.remove('connected', 'error', 'loading');
+  
+  switch (state) {
+    case 'configured':
+      sheetsDot.classList.add('connected');
+      sheetsStatusText.textContent = 'API key configured';
+      break;
+    case 'ready':
+      sheetsDot.classList.add('loading');
+      sheetsStatusText.textContent = 'Ready to save';
+      break;
+    case 'invalid':
+      sheetsDot.classList.add('error');
+      sheetsStatusText.textContent = 'Key should start with "AIza"';
+      break;
+    case 'empty':
+    default:
+      sheetsStatusText.textContent = 'Not configured';
+      break;
+  }
 }
 
 /**
@@ -257,6 +352,12 @@ async function handleSave(e) {
   const secret = notionSecretInput.value.trim();
   const databaseId = databaseIdInput.value.trim();
   const openaiKey = openaiApiKeyInput.value.trim();
+  
+  // Google Sheets values
+  const sheetsEnabled = sheetsEnabledCheckbox.checked;
+  const sheetsApiKey = sheetsApiKeyInput.value.trim();
+  const spreadsheetId = spreadsheetIdInput.value.trim();
+  const sheetName = sheetNameInput.value.trim() || 'Sheet1';
 
   if (!secret || !databaseId) {
     showToast('Please fill in all required fields', 'error');
@@ -275,6 +376,18 @@ async function handleSave(e) {
     return;
   }
 
+  // Validate Sheets config if enabled
+  if (sheetsEnabled) {
+    if (!sheetsApiKey || !spreadsheetId) {
+      showToast('Google Sheets requires both API key and Spreadsheet ID', 'error');
+      return;
+    }
+    if (!sheetsApiKey.startsWith('AIza')) {
+      showToast('Google API key should start with "AIza"', 'error');
+      return;
+    }
+  }
+
   // Disable button during save
   saveBtn.disabled = true;
 
@@ -282,7 +395,8 @@ async function handleSave(e) {
     // Build storage object
     const storageData = {
       notionSecret: secret,
-      databaseId: databaseId
+      databaseId: databaseId,
+      sheetsEnabled: sheetsEnabled
     };
     
     // Include OpenAI key if provided
@@ -292,6 +406,18 @@ async function handleSave(e) {
       // Remove existing key if cleared
       await new Promise((resolve) => {
         chrome.storage.local.remove('openaiApiKey', resolve);
+      });
+    }
+
+    // Include Google Sheets credentials if enabled
+    if (sheetsEnabled) {
+      storageData.sheetsApiKey = sheetsApiKey;
+      storageData.spreadsheetId = spreadsheetId;
+      storageData.sheetName = sheetName;
+    } else {
+      // Remove existing Sheets credentials if disabled
+      await new Promise((resolve) => {
+        chrome.storage.local.remove(['sheetsApiKey', 'spreadsheetId', 'sheetName'], resolve);
       });
     }
 
@@ -313,6 +439,13 @@ async function handleSave(e) {
       updateOpenAIStatus('configured');
     } else {
       updateOpenAIStatus('empty');
+    }
+    
+    // Update Sheets status
+    if (sheetsEnabled && sheetsApiKey) {
+      updateSheetsStatus('configured');
+    } else {
+      updateSheetsStatus('empty');
     }
     
     // Test the connection after saving

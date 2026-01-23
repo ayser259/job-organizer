@@ -4,6 +4,7 @@
  */
 
 import { NotionAPI, PropertyFormatters, PropertyParsers, parseNotionPage, getTabInfo, OpenAIHelper } from '../lib/notion-api.js';
+import { SheetsAPI, notionToSheetRow, isSheetsEnabled } from '../lib/sheets-api.js';
 
 // DOM Elements
 const loadingState = document.getElementById('loadingState');
@@ -16,6 +17,7 @@ const dbName = document.getElementById('dbName');
 
 // Buttons
 const settingsBtn = document.getElementById('settingsBtn');
+const refreshBtn = document.getElementById('refreshBtn');
 const configureBtn = document.getElementById('configureBtn');
 const submitBtn = document.getElementById('submitBtn');
 const quickSaveBtn = document.getElementById('quickSaveBtn');
@@ -31,6 +33,11 @@ const modalClose = document.getElementById('modalClose');
 const cancelCustomize = document.getElementById('cancelCustomize');
 const saveCustomize = document.getElementById('saveCustomize');
 const customizeFieldsList = document.getElementById('customizeFieldsList');
+const helpBtn = document.getElementById('helpBtn');
+const shortcutsModal = document.getElementById('shortcutsModal');
+const shortcutsModalOverlay = document.getElementById('shortcutsModalOverlay');
+const shortcutsModalClose = document.getElementById('shortcutsModalClose');
+const closeShortcutsBtn = document.getElementById('closeShortcutsBtn');
 const debugModal = document.getElementById('debugModal');
 const debugModalOverlay = document.getElementById('debugModalOverlay');
 const debugModalClose = document.getElementById('debugModalClose');
@@ -47,10 +54,12 @@ const charCount = document.getElementById('charCount');
 
 // State
 let notionApi = null;
+let sheetsApi = null;
 let openaiHelper = null;
 let databaseSchema = null;
 let tabInfo = null;
 let hasOpenAI = false;
+let hasSheetsEnabled = false;
 let hiddenFields = new Set(); // Track which fields are hidden
 let fieldOrder = []; // Track custom field order
 let existingPageId = null; // Track if we're editing an existing page
@@ -68,6 +77,51 @@ function findUrlField(schema) {
     }
   }
   return null;
+}
+
+/**
+ * Load cached database schema from storage
+ * @param {string} currentDatabaseId - Current database ID to validate cache
+ * @returns {Promise<Object|null>} Cached schema or null
+ */
+async function loadCachedSchema(currentDatabaseId) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['databaseSchema', 'databaseSchemaTimestamp', 'cachedDatabaseId'], (result) => {
+      if (result.databaseSchema && result.databaseSchemaTimestamp) {
+        // Check if database ID matches
+        if (result.cachedDatabaseId !== currentDatabaseId) {
+          console.log('Database ID changed, invalidating cache');
+          resolve(null);
+          return;
+        }
+        
+        const cacheAge = Date.now() - result.databaseSchemaTimestamp;
+        const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+        
+        if (cacheAge < CACHE_DURATION) {
+          console.log(`Using cached schema (age: ${Math.round(cacheAge / 1000)}s)`);
+          resolve(result.databaseSchema);
+          return;
+        }
+      }
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * Cache database schema to storage
+ * @param {Object} schema - Database schema to cache
+ * @param {string} databaseId - Database ID for cache validation
+ */
+async function cacheSchema(schema, databaseId) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({
+      databaseSchema: schema,
+      databaseSchemaTimestamp: Date.now(),
+      cachedDatabaseId: databaseId
+    }, resolve);
+  });
 }
 
 /**
@@ -118,14 +172,12 @@ async function init() {
   try {
     // Concurrent data fetching
     notionApi = new NotionAPI();
+    sheetsApi = new SheetsAPI();
     openaiHelper = new OpenAIHelper();
     
-    const [credentials, tabData, openaiKey] = await Promise.all([
-      notionApi.loadCredentials().catch(e => ({ error: e.message })),
-      getTabInfo().catch(e => ({ error: e.message })),
-      openaiHelper.loadApiKey().catch(e => ({ error: e.message }))
-    ]);
-
+    // Load credentials first to get database ID for cache validation
+    const credentials = await notionApi.loadCredentials().catch(e => ({ error: e.message }));
+    
     if (credentials.error === 'CREDENTIALS_NOT_CONFIGURED') {
       showError('Please configure your Notion credentials to get started.');
       return;
@@ -136,8 +188,19 @@ async function init() {
       return;
     }
 
+    // Now load other data and cached schema in parallel
+    const [tabData, openaiKey, sheetsEnabled, cachedSchema] = await Promise.all([
+      getTabInfo().catch(e => ({ error: e.message })),
+      openaiHelper.loadApiKey().catch(e => ({ error: e.message })),
+      isSheetsEnabled(),
+      loadCachedSchema(notionApi.credentials.databaseId)
+    ]);
+
     // Check if OpenAI is configured
     hasOpenAI = !openaiKey.error;
+    
+    // Check if Google Sheets sync is enabled
+    hasSheetsEnabled = sheetsEnabled;
 
     tabInfo = tabData.error ? { url: '', title: '' } : tabData;
     
@@ -148,38 +211,162 @@ async function init() {
     console.log('Company Name:', tabInfo.companyName || '(not extracted)');
     console.log('Location:', tabInfo.location || '(not extracted)');
     console.log('URL:', tabInfo.url || '(empty)');
+    console.log('Selected Text:', tabInfo.selectedText ? `${tabInfo.selectedText.substring(0, 100)}${tabInfo.selectedText.length > 100 ? '...' : ''}` : '(none)');
     console.log('======================');
 
-    // Fetch database schema
-    databaseSchema = await notionApi.getDatabase();
+    // Use cached schema if available for immediate rendering
+    if (cachedSchema) {
+      databaseSchema = cachedSchema;
+      
+      // Show refresh button since we're using cached schema
+      if (refreshBtn) {
+        refreshBtn.classList.remove('hidden');
+      }
+      
+      // Load preferences and render form immediately with cached schema
+      await Promise.all([
+        loadHiddenFields(),
+        loadFieldOrder()
+      ]);
+      
+      // Check for existing entry with same URL
+      await checkForExistingEntry();
+      
+      // Render form with cached schema
+      renderForm(databaseSchema, tabInfo);
+      updateSubmitButton();
+      showForm();
+      
+      // Show AI button if configured
+      if (hasOpenAI) {
+        aiBtn.classList.remove('hidden');
+        debugBtn.classList.remove('hidden');
+      }
+      
+      // Update footer
+      dbName.textContent = databaseSchema.title?.[0]?.plain_text || 'Untitled Database';
+      footer.classList.remove('hidden');
+    }
+
+    // Fetch fresh database schema in the background
+    try {
+      const freshSchema = await notionApi.getDatabase();
+      
+      // Only update if schema actually changed
+      const schemaChanged = !databaseSchema || 
+        JSON.stringify(databaseSchema.properties) !== JSON.stringify(freshSchema.properties);
+      
+      if (schemaChanged) {
+        console.log('Schema changed, updating cache and form');
+        databaseSchema = freshSchema;
+        await cacheSchema(freshSchema, notionApi.credentials.databaseId);
+        
+        // Re-render form with fresh schema if it changed
+        if (databaseSchema) {
+          renderForm(databaseSchema, tabInfo);
+          dbName.textContent = databaseSchema.title?.[0]?.plain_text || 'Untitled Database';
+          
+          // Re-check for existing entry with fresh schema
+          await checkForExistingEntry();
+          renderForm(databaseSchema, tabInfo);
+          updateSubmitButton();
+        }
+      } else {
+        // Update cache timestamp even if schema didn't change
+        await cacheSchema(freshSchema, notionApi.credentials.databaseId);
+      }
+      
+      // Hide refresh button after fresh schema is loaded
+      if (refreshBtn) {
+        refreshBtn.classList.add('hidden');
+      }
+    } catch (error) {
+      console.error('Error fetching fresh schema:', error);
+      // Don't fail if we have cached schema - just log the error
+      if (!cachedSchema) {
+        throw error; // Only throw if we don't have cached schema
+      }
+    }
+
+    // If we didn't have cached schema, initialize now
+    if (!cachedSchema) {
+      // Load preferences
+      await Promise.all([
+        loadHiddenFields(),
+        loadFieldOrder()
+      ]);
+      
+      // Check for existing entry with same URL
+      await checkForExistingEntry();
+      
+      // Render form
+      renderForm(databaseSchema, tabInfo);
+      updateSubmitButton();
+      showForm();
+      
+      // Show AI button if configured
+      if (hasOpenAI) {
+        aiBtn.classList.remove('hidden');
+        debugBtn.classList.remove('hidden');
+      }
+      
+      // Update footer
+      dbName.textContent = databaseSchema.title?.[0]?.plain_text || 'Untitled Database';
+      footer.classList.remove('hidden');
+    }
+
+  } catch (error) {
+    console.error('Initialization error:', error);
+    showError(error.message);
+  }
+}
+
+/**
+ * Refresh database schema manually
+ */
+async function refreshSchema() {
+  if (!notionApi || !refreshBtn) return;
+  
+  // Show loading state
+  refreshBtn.disabled = true;
+  refreshBtn.classList.add('refreshing');
+  
+  try {
+    // Fetch fresh schema
+    const freshSchema = await notionApi.getDatabase();
     
-    // Load preferences
+    // Update cache
+    await cacheSchema(freshSchema, notionApi.credentials.databaseId);
+    
+    // Update schema
+    databaseSchema = freshSchema;
+    
+    // Re-render form with fresh schema
     await Promise.all([
       loadHiddenFields(),
       loadFieldOrder()
     ]);
     
-    // Check for existing entry with same URL
+    // Re-check for existing entry
     await checkForExistingEntry();
     
     // Render form
     renderForm(databaseSchema, tabInfo);
     updateSubmitButton();
-    showForm();
-    
-    // Show AI button if configured
-    if (hasOpenAI) {
-      aiBtn.classList.remove('hidden');
-      debugBtn.classList.remove('hidden');
-    }
     
     // Update footer
     dbName.textContent = databaseSchema.title?.[0]?.plain_text || 'Untitled Database';
-    footer.classList.remove('hidden');
-
+    
+    // Hide refresh button since we now have fresh schema
+    refreshBtn.classList.add('hidden');
+    
+    showToast('Schema refreshed', 'success');
   } catch (error) {
-    console.error('Initialization error:', error);
-    showError(error.message);
+    console.error('Error refreshing schema:', error);
+    showToast('Failed to refresh schema', 'error');
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.classList.remove('refreshing');
   }
 }
 
@@ -195,6 +382,10 @@ function setupEventListeners() {
     chrome.runtime.openOptionsPage();
   });
 
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', refreshSchema);
+  }
+
   addAnotherBtn.addEventListener('click', () => {
     resetForm();
     showForm();
@@ -204,12 +395,102 @@ function setupEventListeners() {
   
   aiBtn.addEventListener('click', handleAiFill);
   
+  // Listen for messages from background service worker (keyboard shortcuts)
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    console.log('Popup received message:', request.type);
+    
+    if (request.type === 'TRIGGER_ADD_DETAILS') {
+      showToast('⌨️ Add Details (shortcut)', 'info');
+      // Trigger Add Details action
+      // Ensure form is visible and ready
+      if (clipperForm && clipperForm.classList.contains('hidden')) {
+        showForm();
+      }
+      
+      // Wait for form to be ready, then trigger
+      const tryTrigger = () => {
+        if (aiBtn && !aiBtn.disabled && !aiBtn.classList.contains('hidden')) {
+          console.log('Triggering Add Details via keyboard shortcut');
+          handleAiFill();
+          sendResponse({ success: true });
+          return true;
+        } else {
+          console.log('Add Details button not ready yet, retrying...');
+          return false;
+        }
+      };
+      
+      if (!tryTrigger()) {
+        // Retry after a short delay if not ready
+        setTimeout(() => {
+          if (!tryTrigger()) {
+            console.error('Add Details button not available after retry');
+            sendResponse({ success: false, error: 'Add Details button not available' });
+          }
+        }, 300);
+      }
+      
+      return true; // Indicates we will send a response asynchronously
+    } else if (request.type === 'TRIGGER_QUICK_SAVE') {
+      showToast('⌨️ Quick Save (shortcut)', 'info');
+      // Trigger Quick Save action
+      if (!clipperForm) {
+        console.error('Form not available for Quick Save');
+        sendResponse({ success: false, error: 'Form not initialized' });
+        return true;
+      }
+      
+      // Ensure form is visible and ready
+      if (clipperForm.classList.contains('hidden')) {
+        showForm();
+      }
+      
+      // Check if form is ready to submit
+      if (quickSaveBtn && !quickSaveBtn.disabled) {
+        try {
+          console.log('Triggering Quick Save via keyboard shortcut');
+          const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+          clipperForm.dispatchEvent(submitEvent);
+          sendResponse({ success: true });
+        } catch (error) {
+          console.error('Error triggering Quick Save:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      } else {
+        console.error('Quick Save button not available');
+        sendResponse({ success: false, error: 'Quick Save button not available' });
+      }
+      return true; // Indicates we will send a response asynchronously
+    } else if (request.type === 'FOCUS_POPUP') {
+      // Focus the popup window
+      window.focus();
+      sendResponse({ success: true });
+      return true;
+    }
+    
+    return false; // Not handled
+  });
+  
   // Customize modal
   customizeBtn.addEventListener('click', openCustomizeModal);
   modalOverlay.addEventListener('click', closeCustomizeModal);
   modalClose.addEventListener('click', closeCustomizeModal);
   cancelCustomize.addEventListener('click', closeCustomizeModal);
   saveCustomize.addEventListener('click', saveCustomizeOrder);
+  
+  // Shortcuts modal
+  if (helpBtn) {
+    helpBtn.addEventListener('click', openShortcutsModal);
+  }
+  if (shortcutsModalOverlay) {
+    shortcutsModalOverlay.addEventListener('click', closeShortcutsModal);
+  }
+  if (shortcutsModalClose) {
+    shortcutsModalClose.addEventListener('click', closeShortcutsModal);
+  }
+  if (closeShortcutsBtn) {
+    closeShortcutsBtn.addEventListener('click', closeShortcutsModal);
+  }
   
   // Debug modal
   if (debugModalOverlay) {
@@ -664,7 +945,8 @@ function renderTitleField(group, name, property, tab, labelContainer, existingDa
   if (!existingData || !existingData[name]) {
     if (isRoleField(name) && tab.roleName) {
       defaultValue = tab.roleName;
-    } else if (isCompanyField(name) && tab.companyName) {
+    } else if (isCompanyNameField(name) && tab.companyName) {
+      // Only fill company name fields, not company summary fields
       defaultValue = tab.companyName;
     }
   }
@@ -696,6 +978,36 @@ function isCompanyField(name) {
          lowercaseName.includes('company') ||
          lowercaseName === 'organization' ||
          lowercaseName === 'employer';
+}
+
+/**
+ * Check if field name is specifically a company NAME field (not summary)
+ */
+function isCompanyNameField(name) {
+  const lowercaseName = name.toLowerCase();
+  // Exclude summary fields - only match fields that are specifically for company name
+  if (lowercaseName.includes('summary') || lowercaseName.includes('description') || lowercaseName.includes('about')) {
+    return false;
+  }
+  return lowercaseName === 'company' || 
+         lowercaseName === 'company name' ||
+         lowercaseName === 'organization' ||
+         lowercaseName === 'employer';
+}
+
+/**
+ * Check if field name suggests it's a raw job description field
+ */
+function isRawJdField(name) {
+  const lowercaseName = name.toLowerCase();
+  // Match variations of "raw jd", "raw job description", etc.
+  return lowercaseName === 'raw jd' ||
+         lowercaseName === 'raw_jd' ||
+         lowercaseName === 'rawjd' ||
+         lowercaseName === 'raw job description' ||
+         lowercaseName === 'raw_job_description' ||
+         lowercaseName.includes('raw jd') ||
+         lowercaseName.includes('raw_jd');
 }
 
 /**
@@ -800,24 +1112,43 @@ function renderRichTextField(group, name, property, labelContainer, existingData
   createLabel(name, 'text', labelContainer);
   group.appendChild(labelContainer);
   
-  const textarea = document.createElement('textarea');
-  textarea.className = 'form-textarea';
-  textarea.name = name;
-  textarea.placeholder = `Enter ${name.toLowerCase()}...`;
+  // Check if this is a company name field - render as input instead of textarea
+  const isCompanyName = isCompanyNameField(name);
+  const isRawJd = isRawJdField(name);
   
-  // Use existing data if available, otherwise intelligently pre-populate with role or company
+  let inputElement;
+  if (isCompanyName) {
+    // Render as input (like role name) for company name fields
+    inputElement = document.createElement('input');
+    inputElement.type = 'text';
+    inputElement.className = 'form-input';
+  } else {
+    // Render as textarea for other rich_text fields
+    inputElement = document.createElement('textarea');
+    inputElement.className = 'form-textarea';
+  }
+  
+  inputElement.name = name;
+  inputElement.placeholder = `Enter ${name.toLowerCase()}...`;
+  
+  // Use existing data if available, otherwise intelligently pre-populate
   let defaultValue = '';
   if (!existingData || !existingData[name]) {
     if (isRoleField(name) && tabInfo && tabInfo.roleName) {
       defaultValue = tabInfo.roleName;
-    } else if (isCompanyField(name) && tabInfo && tabInfo.companyName) {
+    } else if (isCompanyName && tabInfo && tabInfo.companyName) {
+      // Only fill if it's specifically a company name field (not summary)
       defaultValue = tabInfo.companyName;
+    } else if (isRawJd && tabInfo && tabInfo.selectedText) {
+      // Fill raw jd field with selected text
+      defaultValue = tabInfo.selectedText;
+      console.log(`✅ Auto-filled raw jd field with selected text (${tabInfo.selectedText.length} chars)`);
     }
   }
   
-  textarea.value = (existingData && existingData[name]) || defaultValue;
+  inputElement.value = (existingData && existingData[name]) || defaultValue;
   
-  group.appendChild(textarea);
+  group.appendChild(inputElement);
 }
 
 /**
@@ -1163,6 +1494,7 @@ async function handleSubmit(e) {
     let result;
     let pageUrl;
     
+    // Step 1: Save to Notion
     if (existingPageId) {
       // Update existing page
       console.log('Updating existing page:', existingPageId);
@@ -1181,6 +1513,20 @@ async function handleSubmit(e) {
       pageUrl = `https://notion.so/${pageId}`;
     }
     
+    // Step 2: Also save to Google Sheets if enabled
+    if (hasSheetsEnabled) {
+      try {
+        console.log('Syncing to Google Sheets...');
+        await saveToGoogleSheets(properties, tabInfo.url);
+        console.log('Successfully synced to Google Sheets');
+      } catch (sheetsError) {
+        console.error('Google Sheets sync error:', sheetsError);
+        // Don't fail the whole operation if Sheets sync fails
+        // Just log it and continue
+        showToast('⚠️ Saved to Notion, but Sheets sync failed', 'error');
+      }
+    }
+    
     showSuccess(pageUrl);
     
   } catch (error) {
@@ -1194,6 +1540,47 @@ async function handleSubmit(e) {
     btnLoading.classList.add('hidden');
     quickBtnText.classList.remove('hidden');
     quickBtnLoading.classList.add('hidden');
+  }
+}
+
+/**
+ * Save data to Google Sheets
+ * @param {Object} notionProperties - Notion formatted properties
+ * @param {string} url - Page URL for duplicate detection
+ */
+async function saveToGoogleSheets(notionProperties, url) {
+  try {
+    // Get spreadsheet headers
+    const spreadsheet = await sheetsApi.getSpreadsheet();
+    
+    if (!spreadsheet.values || spreadsheet.values.length === 0) {
+      throw new Error('No headers found in spreadsheet');
+    }
+    
+    const headers = spreadsheet.values[0];
+    
+    // Convert Notion properties to flat row
+    const rowData = notionToSheetRow(notionProperties, headers);
+    
+    // Check if entry already exists (by URL)
+    if (url) {
+      const existingRow = await sheetsApi.findRowByUrl(url);
+      
+      if (existingRow) {
+        // Update existing row
+        console.log('Updating existing Sheets row:', existingRow.rowIndex);
+        await sheetsApi.updateRow(existingRow.rowIndex, rowData);
+        return;
+      }
+    }
+    
+    // Append new row
+    console.log('Appending new row to Sheets');
+    await sheetsApi.appendRow(rowData);
+    
+  } catch (error) {
+    console.error('Error saving to Google Sheets:', error);
+    throw error;
   }
 }
 
@@ -1387,6 +1774,12 @@ async function handleAiInputSubmit() {
     
     if (filledCount > 0) {
       showToast(`✨ Filled ${filledCount} field${filledCount > 1 ? 's' : ''}`, 'success');
+      
+      // Automatically trigger save after successful field filling
+      setTimeout(() => {
+        const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+        clipperForm.dispatchEvent(submitEvent);
+      }, 500); // Small delay to let user see the toast
     } else {
       showToast('Couldn\'t extract any fields from the content', 'error');
     }
@@ -1571,6 +1964,76 @@ function openCustomizeModal() {
  */
 function closeCustomizeModal() {
   customizeModal.classList.add('hidden');
+}
+
+/**
+ * Open shortcuts modal and load actual keyboard shortcuts
+ */
+async function openShortcutsModal() {
+  if (!shortcutsModal) return;
+  
+  shortcutsModal.classList.remove('hidden');
+  
+  // Load actual keyboard shortcuts from Chrome
+  try {
+    const commands = await chrome.commands.getAll();
+    const shortcutsMap = {};
+    
+    commands.forEach(command => {
+      if (command.shortcut) {
+        shortcutsMap[command.name] = command.shortcut;
+      }
+    });
+    
+    // Update the display with actual shortcuts
+    const shortcutOpenEl = document.getElementById('shortcut-open');
+    const shortcutAddDetailsEl = document.getElementById('shortcut-add-details');
+    const shortcutQuickSaveEl = document.getElementById('shortcut-quick-save');
+    
+    // Format shortcut for clear display: "Control + Shift + L" or "Command + Shift + E"
+    const formatShortcutForDisplay = (shortcut, defaultWin, defaultMac) => {
+      const raw = shortcut || (navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? defaultMac : defaultWin);
+      return String(raw)
+        .replace(/MacCtrl/gi, 'Control')
+        .replace(/Ctrl/gi, 'Control')
+        .replace(/Cmd/gi, 'Command')
+        .replace(/\+/g, ' + ');
+    };
+    
+    if (shortcutOpenEl) {
+      shortcutOpenEl.textContent = formatShortcutForDisplay(
+        shortcutsMap['open-popup'],
+        'Ctrl+Shift+L',
+        'Command+Shift+L'
+      );
+    }
+    if (shortcutAddDetailsEl) {
+      shortcutAddDetailsEl.textContent = formatShortcutForDisplay(
+        shortcutsMap['add-details'],
+        'Ctrl+Shift+E',
+        'Command+Shift+E'
+      );
+    }
+    if (shortcutQuickSaveEl) {
+      shortcutQuickSaveEl.textContent = formatShortcutForDisplay(
+        shortcutsMap['quick-save'],
+        'Ctrl+Shift+Y',
+        'Command+Shift+Y'
+      );
+    }
+  } catch (error) {
+    console.error('Error loading keyboard shortcuts:', error);
+    // Keep default values if we can't load them
+  }
+}
+
+/**
+ * Close shortcuts modal
+ */
+function closeShortcutsModal() {
+  if (shortcutsModal) {
+    shortcutsModal.classList.add('hidden');
+  }
 }
 
 /**

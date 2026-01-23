@@ -8,6 +8,7 @@ A schema-aware Chrome Extension that dynamically bridges your browser with any N
 - **Auto-Population**: Pre-fills URL and Title fields with the current page data
 - **Duplicate Detection**: Automatically detects existing entries with the same URL and loads them for editing
 - **Update Existing Entries**: Seamlessly update existing database rows instead of creating duplicates
+- **Google Sheets Sync**: Automatically duplicate saves to Google Sheets for easy analysis and sharing
 - **AI-Powered Auto-Fill**: Uses OpenAI to read page content and intelligently fill all form fields
 - **Multi-Type Support**: Handles title, rich_text, url, select, multi_select, checkbox, number, date, email, phone, and status properties
 - **Notion-Inspired UI**: Dark theme interface that matches the Notion aesthetic
@@ -96,6 +97,98 @@ The Database ID is the 32-character string before `?v=`
 3. Click **Save Settings**
 4. The "Add Details" button will now appear in the popup
 
+### Step 6: Enable Google Sheets Sync (Optional)
+
+**Why use Google Sheets sync?**
+- Keep a backup of your data in Google Sheets
+- Easily share data with teammates
+- Create charts, pivot tables, and analyze your data in Sheets
+- Export to CSV or other formats
+- Works alongside Notion - all saves go to both places
+
+**Setup Instructions:**
+
+1. **Create a Google Cloud Project:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Click "Select a project" at the top → "New Project"
+   - Give it a name (e.g., "Notion Clipper")
+   - Click "Create" and wait for the project to be created
+
+2. **Enable Google Sheets API:**
+   - In the search bar at the top, type "Google Sheets API"
+   - Click on the "Google Sheets API" result
+   - Click the blue "Enable" button
+   - Wait for it to finish enabling (takes 10-30 seconds)
+
+3. **Create an API Key:**
+   - Click "Credentials" in the left sidebar
+   - Click the blue "Create Credentials" button at the top
+   - Select "API Key" from the dropdown
+   - A popup will appear with your new API key
+   - Click "Copy" to copy the key (it starts with `AIza`)
+   - Click "Close" (you can restrict the key later if desired)
+
+4. **Prepare Your Spreadsheet:**
+   - Create a new Google Sheets spreadsheet or use an existing one
+   - In **row 1**, add column headers that match your Notion property names **exactly**
+     - Example: If your Notion database has "Title", "URL", "Company", "Status"
+     - Your Sheet should have: `Title | URL | Company | Status` in row 1
+     - Column names are case-sensitive and must match exactly
+   - **Important**: Make the sheet accessible with your API key:
+     - Click the "Share" button in the top-right
+     - Change to "Anyone with the link can view" (or "can edit")
+     - Click "Done"
+   - Copy the Spreadsheet ID from the URL:
+     ```
+     https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit
+     ```
+     The ID is the long string between `/d/` and `/edit`
+
+5. **Configure the Extension:**
+   - In the extension settings (click the gear icon), find the "Google Sheets Sync" section
+   - Toggle "Enable Google Sheets sync" to **ON** (the toggle will turn green)
+   - Paste your Google API key (from step 3)
+   - Paste your Spreadsheet ID (from step 4)
+   - Enter the Sheet name (the tab name at the bottom, usually "Sheet1")
+   - Click **Save Settings**
+   - You should see "API key configured" with a green dot
+
+6. **Test It:**
+   - Navigate to any webpage
+   - Open the extension popup
+   - Fill in the form
+   - Click "Save to Notion"
+   - Check both your Notion database and Google Sheet - the entry should appear in both!
+
+7. **How It Works:**
+   - Every time you save to Notion, data is automatically synced to Sheets
+   - If an entry with the same URL exists, it updates the row
+   - If it's new, it appends a new row
+   - Notion properties are converted to flat values:
+     - Select/Status → Text value
+     - Multi-select → Comma-separated values
+     - Checkbox → TRUE/FALSE
+     - All other types → Their string representation
+
+**Troubleshooting:**
+
+| Issue | Solution |
+|-------|----------|
+| "API not enabled" error | Go to Google Cloud Console, search for "Google Sheets API", click Enable, and wait 1-2 minutes for it to activate |
+| "Access denied" or 403 error | Make sure your spreadsheet is shared: Click Share → "Anyone with the link can view" |
+| "Spreadsheet not found" or 404 | Double-check the Spreadsheet ID - it should be the long string between `/d/` and `/edit` in your sheet URL |
+| Data not appearing in Sheets | Check that column headers in row 1 match your Notion property names **exactly** (case-sensitive) |
+| "Invalid API key" | Verify your API key starts with `AIza` and was copied completely without spaces |
+| Sync fails but Notion works | The extension will still save to Notion even if Sheets sync fails - check browser console (F12) for detailed error |
+| Still not working? | Open browser console (F12), try saving again, and look for error messages with details |
+
+**Common Mistakes:**
+- ❌ Column headers don't match Notion property names exactly
+- ❌ Spreadsheet is fully private (not shared with "Anyone with the link")
+- ❌ API key wasn't copied completely or has extra spaces
+- ❌ Sheets API not enabled or not fully activated yet
+- ❌ Wrong Spreadsheet ID (should be 44 characters long)
+
 ## Usage
 
 1. Navigate to any webpage you want to save
@@ -179,7 +272,8 @@ job-organizer/
 ├── background/
 │   └── service-worker.js   # API proxy & tab info handler
 ├── lib/
-│   └── notion-api.js       # Notion API abstraction & formatters
+│   ├── notion-api.js       # Notion API abstraction & formatters
+│   └── sheets-api.js       # Google Sheets API abstraction
 ├── popup/
 │   ├── popup.html          # Main popup UI
 │   ├── popup.css           # Notion-inspired styling
@@ -199,11 +293,17 @@ job-organizer/
 │   Popup     │────▶│  Service Worker  │────▶│  Notion API │
 │  (popup.js) │◀────│ (service-worker) │◀────│             │
 └─────────────┘     └──────────────────┘     └─────────────┘
-      │                                              │
-      │  1. Request schema                           │
-      │  2. Render form dynamically                  │
-      │  3. Submit page creation                     │
-      └──────────────────────────────────────────────┘
+      │                      │                       
+      │                      │                ┌──────────────┐
+      │                      └───────────────▶│ Sheets API   │
+      │                                       │ (optional)   │
+      │                                       └──────────────┘
+      │
+      │  1. Request schema from Notion
+      │  2. Render form dynamically
+      │  3. Submit page creation to Notion
+      │  4. Sync to Google Sheets (if enabled)
+      └─────────────────────────────────────────────────────
 ```
 
 ## API Payload Format
