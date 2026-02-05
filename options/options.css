@@ -224,27 +224,6 @@ body {
   border-color: var(--error);
 }
 
-/* Google Sheets Section */
-.sheets-section {
-  border: 1px solid rgba(52, 168, 83, 0.2);
-  background: linear-gradient(135deg, rgba(52, 168, 83, 0.05) 0%, var(--bg-secondary) 100%);
-}
-
-.sheets-section .section-title svg {
-  color: #34a853;
-}
-
-.sheets-config {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-color);
-}
-
-.sheets-status {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-color);
-}
 
 /* Toggle Switch */
 .toggle-label {

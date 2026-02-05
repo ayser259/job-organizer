@@ -41,9 +41,6 @@ async function handleMessage(request) {
     case 'GET_PAGE_CONTENT':
       return await getPageContent();
     
-    case 'SHEETS_API_REQUEST':
-      return await handleSheetsRequest(request.payload);
-    
     default:
       throw new Error('Unknown request type: ' + request.type);
   }
@@ -413,60 +410,6 @@ async function handleOpenAIRequest(payload) {
     }
     if (response.status === 402) {
       throw new Error('OpenAI billing issue. Please check your account.');
-    }
-    
-    throw new Error(errorMessage);
-  }
-
-  return { success: true, data };
-}
-
-/**
- * Proxy Google Sheets API requests
- * @param {Object} payload - Request configuration
- * @returns {Promise<Object>} API response
- */
-async function handleSheetsRequest(payload) {
-  const { endpoint, method = 'GET', body, apiKey, spreadsheetId } = payload;
-  
-  if (!apiKey) {
-    throw new Error('Google API key not configured');
-  }
-
-  if (!spreadsheetId) {
-    throw new Error('Spreadsheet ID not configured');
-  }
-
-  const baseUrl = 'https://sheets.googleapis.com/v4/spreadsheets';
-  const url = `${baseUrl}/${spreadsheetId}${endpoint}${endpoint.includes('?') ? '&' : '?'}key=${apiKey}`;
-
-  const config = {
-    method,
-    headers: {
-      'Content-Type': 'application/json'
-    }
-  };
-
-  if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
-    config.body = JSON.stringify(body);
-  }
-
-  console.log('Making Sheets request:', method, endpoint);
-
-  const response = await fetch(url, config);
-  const data = await response.json();
-
-  if (!response.ok) {
-    const errorMessage = data.error?.message || `API Error: ${response.status}`;
-    
-    if (response.status === 403) {
-      throw new Error('Access denied. Check your API key and ensure Sheets API is enabled.');
-    }
-    if (response.status === 404) {
-      throw new Error('Spreadsheet not found. Please verify the Spreadsheet ID.');
-    }
-    if (response.status === 429) {
-      throw new Error('Rate limited. Please wait a moment and try again.');
     }
     
     throw new Error(errorMessage);

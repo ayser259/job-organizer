@@ -4,7 +4,6 @@
  */
 
 import { NotionAPI, PropertyFormatters, PropertyParsers, parseNotionPage, getTabInfo, OpenAIHelper } from '../lib/notion-api.js';
-import { SheetsAPI, notionToSheetRow, isSheetsEnabled } from '../lib/sheets-api.js';
 
 // DOM Elements
 const loadingState = document.getElementById('loadingState');
@@ -54,12 +53,10 @@ const charCount = document.getElementById('charCount');
 
 // State
 let notionApi = null;
-let sheetsApi = null;
 let openaiHelper = null;
 let databaseSchema = null;
 let tabInfo = null;
 let hasOpenAI = false;
-let hasSheetsEnabled = false;
 let hiddenFields = new Set(); // Track which fields are hidden
 let fieldOrder = []; // Track custom field order
 let existingPageId = null; // Track if we're editing an existing page
@@ -172,7 +169,6 @@ async function init() {
   try {
     // Concurrent data fetching
     notionApi = new NotionAPI();
-    sheetsApi = new SheetsAPI();
     openaiHelper = new OpenAIHelper();
     
     // Load credentials first to get database ID for cache validation
@@ -189,18 +185,14 @@ async function init() {
     }
 
     // Now load other data and cached schema in parallel
-    const [tabData, openaiKey, sheetsEnabled, cachedSchema] = await Promise.all([
+    const [tabData, openaiKey, cachedSchema] = await Promise.all([
       getTabInfo().catch(e => ({ error: e.message })),
       openaiHelper.loadApiKey().catch(e => ({ error: e.message })),
-      isSheetsEnabled(),
       loadCachedSchema(notionApi.credentials.databaseId)
     ]);
 
     // Check if OpenAI is configured
     hasOpenAI = !openaiKey.error;
-    
-    // Check if Google Sheets sync is enabled
-    hasSheetsEnabled = sheetsEnabled;
 
     tabInfo = tabData.error ? { url: '', title: '' } : tabData;
     
@@ -400,71 +392,45 @@ function setupEventListeners() {
     console.log('Popup received message:', request.type);
     
     if (request.type === 'TRIGGER_ADD_DETAILS') {
-      showToast('⌨️ Add Details (shortcut)', 'info');
       // Trigger Add Details action
       // Ensure form is visible and ready
       if (clipperForm && clipperForm.classList.contains('hidden')) {
         showForm();
       }
-      
-      // Wait for form to be ready, then trigger
-      const tryTrigger = () => {
+      // Wait a bit for form to be ready, then trigger
+      setTimeout(() => {
         if (aiBtn && !aiBtn.disabled && !aiBtn.classList.contains('hidden')) {
-          console.log('Triggering Add Details via keyboard shortcut');
           handleAiFill();
-          sendResponse({ success: true });
-          return true;
+          if (sendResponse) sendResponse({ success: true });
         } else {
-          console.log('Add Details button not ready yet, retrying...');
-          return false;
+          if (sendResponse) sendResponse({ success: false, error: 'Add Details button not available' });
         }
-      };
-      
-      if (!tryTrigger()) {
-        // Retry after a short delay if not ready
-        setTimeout(() => {
-          if (!tryTrigger()) {
-            console.error('Add Details button not available after retry');
-            sendResponse({ success: false, error: 'Add Details button not available' });
-          }
-        }, 300);
-      }
-      
+      }, 100);
       return true; // Indicates we will send a response asynchronously
     } else if (request.type === 'TRIGGER_QUICK_SAVE') {
-      showToast('⌨️ Quick Save (shortcut)', 'info');
       // Trigger Quick Save action
-      if (!clipperForm) {
-        console.error('Form not available for Quick Save');
-        sendResponse({ success: false, error: 'Form not initialized' });
-        return true;
-      }
-      
-      // Ensure form is visible and ready
-      if (clipperForm.classList.contains('hidden')) {
-        showForm();
-      }
-      
-      // Check if form is ready to submit
-      if (quickSaveBtn && !quickSaveBtn.disabled) {
+      if (quickSaveBtn && !quickSaveBtn.disabled && clipperForm) {
+        // Ensure form is visible and ready
+        if (clipperForm.classList.contains('hidden')) {
+          showForm();
+        }
+        // Trigger form submission
         try {
-          console.log('Triggering Quick Save via keyboard shortcut');
           const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
           clipperForm.dispatchEvent(submitEvent);
-          sendResponse({ success: true });
+          if (sendResponse) sendResponse({ success: true });
         } catch (error) {
           console.error('Error triggering Quick Save:', error);
-          sendResponse({ success: false, error: error.message });
+          if (sendResponse) sendResponse({ success: false, error: error.message });
         }
       } else {
-        console.error('Quick Save button not available');
-        sendResponse({ success: false, error: 'Quick Save button not available' });
+        if (sendResponse) sendResponse({ success: false, error: 'Quick Save not available' });
       }
       return true; // Indicates we will send a response asynchronously
     } else if (request.type === 'FOCUS_POPUP') {
       // Focus the popup window
       window.focus();
-      sendResponse({ success: true });
+      if (sendResponse) sendResponse({ success: true });
       return true;
     }
     
@@ -530,8 +496,8 @@ function setupEventListeners() {
   }
   if (aiInputTextarea && charCount) {
     aiInputTextarea.addEventListener('input', () => {
-      const count = aiInputTextarea.value.length;
-      charCount.textContent = count.toLocaleString();
+      const count = aiInputTextarea.value.trim().length;
+      charCount.textContent = aiInputTextarea.value.length.toLocaleString();
       submitAiInput.disabled = count === 0;
     });
   }
@@ -1513,20 +1479,6 @@ async function handleSubmit(e) {
       pageUrl = `https://notion.so/${pageId}`;
     }
     
-    // Step 2: Also save to Google Sheets if enabled
-    if (hasSheetsEnabled) {
-      try {
-        console.log('Syncing to Google Sheets...');
-        await saveToGoogleSheets(properties, tabInfo.url);
-        console.log('Successfully synced to Google Sheets');
-      } catch (sheetsError) {
-        console.error('Google Sheets sync error:', sheetsError);
-        // Don't fail the whole operation if Sheets sync fails
-        // Just log it and continue
-        showToast('⚠️ Saved to Notion, but Sheets sync failed', 'error');
-      }
-    }
-    
     showSuccess(pageUrl);
     
   } catch (error) {
@@ -1540,47 +1492,6 @@ async function handleSubmit(e) {
     btnLoading.classList.add('hidden');
     quickBtnText.classList.remove('hidden');
     quickBtnLoading.classList.add('hidden');
-  }
-}
-
-/**
- * Save data to Google Sheets
- * @param {Object} notionProperties - Notion formatted properties
- * @param {string} url - Page URL for duplicate detection
- */
-async function saveToGoogleSheets(notionProperties, url) {
-  try {
-    // Get spreadsheet headers
-    const spreadsheet = await sheetsApi.getSpreadsheet();
-    
-    if (!spreadsheet.values || spreadsheet.values.length === 0) {
-      throw new Error('No headers found in spreadsheet');
-    }
-    
-    const headers = spreadsheet.values[0];
-    
-    // Convert Notion properties to flat row
-    const rowData = notionToSheetRow(notionProperties, headers);
-    
-    // Check if entry already exists (by URL)
-    if (url) {
-      const existingRow = await sheetsApi.findRowByUrl(url);
-      
-      if (existingRow) {
-        // Update existing row
-        console.log('Updating existing Sheets row:', existingRow.rowIndex);
-        await sheetsApi.updateRow(existingRow.rowIndex, rowData);
-        return;
-      }
-    }
-    
-    // Append new row
-    console.log('Appending new row to Sheets');
-    await sheetsApi.appendRow(rowData);
-    
-  } catch (error) {
-    console.error('Error saving to Google Sheets:', error);
-    throw error;
   }
 }
 
@@ -1667,14 +1578,31 @@ function openAiInputModal() {
   
   // Get current tab info for context
   getTabInfo().then(tabInfo => {
-    // Pre-fill with tab title/URL as context
-    const context = `Title: ${tabInfo.title || ''}\nURL: ${tabInfo.url || ''}\n\n`;
+    // Pre-fill with tab title/URL and selected text if available
+    let content = `Title: ${tabInfo.title || ''}\nURL: ${tabInfo.url || ''}\n\n`;
+    
+    // Add selected text if available
+    if (tabInfo.selectedText) {
+      content += tabInfo.selectedText;
+      console.log(`✅ Pre-filled modal with ${tabInfo.selectedText.length} characters of selected text`);
+    } else {
+      console.log('ℹ️ No selected text available');
+    }
+    
     if (aiInputTextarea) {
-      aiInputTextarea.value = context;
-      charCount.textContent = context.length.toLocaleString();
+      aiInputTextarea.value = content;
+      charCount.textContent = content.length.toLocaleString();
+      
+      // Enable/disable submit button based on content
+      submitAiInput.disabled = content.trim().length === 0;
+      
       aiInputTextarea.focus();
-      // Select everything after the context so user can paste over it
-      aiInputTextarea.setSelectionRange(context.length, context.length);
+      // If we have selected text, select all so user can easily edit; otherwise just position cursor
+      if (tabInfo.selectedText) {
+        aiInputTextarea.setSelectionRange(0, content.length);
+      } else {
+        aiInputTextarea.setSelectionRange(content.length, content.length);
+      }
     }
   }).catch(() => {
     // If we can't get tab info, just open empty
@@ -1682,11 +1610,11 @@ function openAiInputModal() {
       aiInputTextarea.value = '';
       charCount.textContent = '0';
       aiInputTextarea.focus();
+      submitAiInput.disabled = true;
     }
   });
   
   aiInputModal.classList.remove('hidden');
-  submitAiInput.disabled = true;
 }
 
 /**
@@ -1759,6 +1687,12 @@ async function handleAiInputSubmit() {
     showToast('Analyzing content...', 'info');
     const extractedFields = await openaiHelper.extractFields(databaseSchema, pageContent, hiddenFields);
     
+    console.log('=== AI EXTRACTION RESULTS ===');
+    console.log('Extracted Fields:', extractedFields);
+    console.log('Field Count:', Object.keys(extractedFields || {}).length);
+    console.log('Fields:', Object.keys(extractedFields || {}).join(', '));
+    console.log('===========================');
+    
     if (!extractedFields || typeof extractedFields !== 'object') {
       throw new Error('AI returned invalid response');
     }
@@ -1766,20 +1700,28 @@ async function handleAiInputSubmit() {
     // Fill form fields
     let filledCount = 0;
     for (const [fieldName, value] of Object.entries(extractedFields)) {
+      console.log(`Attempting to fill field "${fieldName}" with value:`, value);
       if (value !== null && value !== undefined && value !== '') {
         const filled = fillFormField(fieldName, value);
+        console.log(`  → Field "${fieldName}" filled: ${filled}`);
         if (filled) filledCount++;
+      } else {
+        console.log(`  → Skipping "${fieldName}" (empty value)`);
       }
     }
+    
+    console.log(`=== FILL SUMMARY: ${filledCount} fields filled ===`);
     
     if (filledCount > 0) {
       showToast(`✨ Filled ${filledCount} field${filledCount > 1 ? 's' : ''}`, 'success');
       
       // Automatically trigger save after successful field filling
+      console.log('Auto-saving in 1 second...');
       setTimeout(() => {
+        console.log('Triggering auto-save...');
         const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
         clipperForm.dispatchEvent(submitEvent);
-      }, 500); // Small delay to let user see the toast
+      }, 1000); // 1 second delay to let user see the filled fields
     } else {
       showToast('Couldn\'t extract any fields from the content', 'error');
     }
@@ -1814,9 +1756,17 @@ async function handleAiInputSubmit() {
  */
 function fillFormField(fieldName, value) {
   const group = formFields.querySelector(`.form-group[data-property-name="${fieldName}"]`);
-  if (!group) return false;
+  if (!group) {
+    console.log(`  ✗ Form group not found for field: "${fieldName}"`);
+    // List all available fields for debugging
+    const availableFields = Array.from(formFields.querySelectorAll('.form-group'))
+      .map(g => g.dataset.propertyName);
+    console.log(`  Available fields: ${availableFields.join(', ')}`);
+    return false;
+  }
   
   const type = group.dataset.propertyType;
+  console.log(`  ✓ Found field "${fieldName}" (type: ${type})`);
   let filled = false;
   
   // Add animation class
@@ -1836,6 +1786,9 @@ function fillFormField(fieldName, value) {
       if (input && value) {
         input.value = value;
         filled = true;
+        console.log(`    → Set ${type} field value to: "${value.substring(0, 50)}${value.length > 50 ? '...' : ''}"`);
+      } else {
+        console.log(`    ✗ Input not found or value empty for ${type} field`);
       }
       break;
     }
@@ -1877,13 +1830,19 @@ function fillFormField(fieldName, value) {
       if (select && value) {
         // Find matching option (case-insensitive)
         const options = Array.from(select.options);
+        console.log(`    Trying to match "${value}" against options: ${options.map(o => o.value).join(', ')}`);
         const match = options.find(opt => 
           opt.value.toLowerCase() === value.toLowerCase()
         );
         if (match) {
           select.value = match.value;
           filled = true;
+          console.log(`    → Matched and set to: "${match.value}"`);
+        } else {
+          console.log(`    ✗ No matching option found for value: "${value}"`);
         }
+      } else {
+        console.log(`    ✗ Select not found or value empty`);
       }
       break;
     }
@@ -1990,35 +1949,33 @@ async function openShortcutsModal() {
     const shortcutAddDetailsEl = document.getElementById('shortcut-add-details');
     const shortcutQuickSaveEl = document.getElementById('shortcut-quick-save');
     
-    // Format shortcut for clear display: "Control + Shift + L" or "Command + Shift + E"
-    const formatShortcutForDisplay = (shortcut, defaultWin, defaultMac) => {
-      const raw = shortcut || (navigator.platform.toUpperCase().indexOf('MAC') >= 0 ? defaultMac : defaultWin);
-      return String(raw)
-        .replace(/MacCtrl/gi, 'Control')
-        .replace(/Ctrl/gi, 'Control')
-        .replace(/Cmd/gi, 'Command')
-        .replace(/\+/g, ' + ');
+    // Helper function to format shortcut or show default
+    const formatShortcut = (shortcut, defaultWin, defaultMac) => {
+      if (shortcut) return shortcut;
+      // Detect OS and show appropriate default
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      return isMac ? defaultMac : defaultWin;
     };
     
     if (shortcutOpenEl) {
-      shortcutOpenEl.textContent = formatShortcutForDisplay(
+      shortcutOpenEl.textContent = formatShortcut(
         shortcutsMap['open-popup'],
-        'Ctrl+Shift+L',
-        'Command+Shift+L'
+        'Ctrl+Shift+E',
+        'Cmd+Shift+E'
       );
     }
     if (shortcutAddDetailsEl) {
-      shortcutAddDetailsEl.textContent = formatShortcutForDisplay(
+      shortcutAddDetailsEl.textContent = formatShortcut(
         shortcutsMap['add-details'],
-        'Ctrl+Shift+E',
-        'Command+Shift+E'
+        'Ctrl+Shift+F',
+        'Cmd+Shift+F'
       );
     }
     if (shortcutQuickSaveEl) {
-      shortcutQuickSaveEl.textContent = formatShortcutForDisplay(
+      shortcutQuickSaveEl.textContent = formatShortcut(
         shortcutsMap['quick-save'],
-        'Ctrl+Shift+Y',
-        'Command+Shift+Y'
+        'Ctrl+Shift+G',
+        'Cmd+Shift+G'
       );
     }
   } catch (error) {
