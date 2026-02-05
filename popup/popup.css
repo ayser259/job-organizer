@@ -422,6 +422,48 @@ body {
 /* Form */
 .form {
   padding: 16px;
+  position: relative;
+}
+
+/* AI Loading Overlay */
+.ai-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(25, 25, 25, 0.95);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  border-radius: var(--radius-lg);
+}
+
+.ai-loading-overlay.hidden {
+  display: none;
+}
+
+.ai-loading-content {
+  text-align: center;
+  color: var(--text-primary);
+}
+
+.ai-loading-content .spinner {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.ai-loading-content p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
 }
 
 .form-fields {

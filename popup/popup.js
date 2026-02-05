@@ -13,6 +13,7 @@ const clipperForm = document.getElementById('clipperForm');
 const formFields = document.getElementById('formFields');
 const footer = document.getElementById('footer');
 const dbName = document.getElementById('dbName');
+const aiLoadingOverlay = document.getElementById('aiLoadingOverlay');
 
 // Buttons
 const settingsBtn = document.getElementById('settingsBtn');
@@ -1644,7 +1645,12 @@ async function handleAiInputSubmit() {
   const btnText = aiBtn.querySelector('.ai-btn-text');
   const btnLoading = aiBtn.querySelector('.ai-btn-loading');
   
-  // Show loading state
+  // Show loading overlay on form
+  if (aiLoadingOverlay) {
+    aiLoadingOverlay.classList.remove('hidden');
+  }
+  
+  // Show loading state on button
   aiBtn.disabled = true;
   btnText.classList.add('hidden');
   btnLoading.classList.remove('hidden');
@@ -1713,15 +1719,11 @@ async function handleAiInputSubmit() {
     console.log(`=== FILL SUMMARY: ${filledCount} fields filled ===`);
     
     if (filledCount > 0) {
-      showToast(`✨ Filled ${filledCount} field${filledCount > 1 ? 's' : ''}`, 'success');
+      showToast(`✨ Filled ${filledCount} field${filledCount > 1 ? 's' : ''} - Saving...`, 'info');
       
-      // Automatically trigger save after successful field filling
-      console.log('Auto-saving in 1 second...');
-      setTimeout(() => {
-        console.log('Triggering auto-save...');
-        const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
-        clipperForm.dispatchEvent(submitEvent);
-      }, 1000); // 1 second delay to let user see the filled fields
+      // Immediately auto-save in background
+      console.log('Auto-saving now...');
+      await handleBackgroundSave();
     } else {
       showToast('Couldn\'t extract any fields from the content', 'error');
     }
@@ -1742,9 +1744,58 @@ async function handleAiInputSubmit() {
     }
     
   } finally {
+    // Hide loading overlay
+    if (aiLoadingOverlay) {
+      aiLoadingOverlay.classList.add('hidden');
+    }
+    
     aiBtn.disabled = false;
     btnText.classList.remove('hidden');
     btnLoading.classList.add('hidden');
+  }
+}
+
+/**
+ * Save form data to Notion in background without changing UI state
+ * Allows the form to remain visible while save happens
+ */
+async function handleBackgroundSave() {
+  try {
+    const properties = buildPayload();
+    let pageUrl;
+    
+    // Save to Notion
+    if (existingPageId) {
+      // Update existing page
+      console.log('Background updating existing page:', existingPageId);
+      await notionApi.updatePage(existingPageId, properties);
+      
+      // Build Notion page URL
+      const pageId = existingPageId.replace(/-/g, '');
+      pageUrl = `https://notion.so/${pageId}`;
+    } else {
+      // Create new page
+      console.log('Background creating new page');
+      const result = await notionApi.createPage(properties);
+      
+      // Build Notion page URL
+      const pageId = result.id.replace(/-/g, '');
+      pageUrl = `https://notion.so/${pageId}`;
+      
+      // Update existingPageId so subsequent saves are updates
+      existingPageId = result.id;
+    }
+    
+    // Show success toast but keep form visible
+    showToast('✅ Saved to Notion!', 'success');
+    console.log('Background save completed:', pageUrl);
+    
+    // Update button text to show it's been saved
+    updateSubmitButton();
+    
+  } catch (error) {
+    console.error('Background save error:', error);
+    showToast(`❌ Save failed: ${error.message}`, 'error');
   }
 }
 
